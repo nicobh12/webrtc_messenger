@@ -212,6 +212,7 @@ Para la arquitectura del laboratorio, el intercambio de datos a través del WebS
 }
 ```
 
+### CAPÍTULO 4. Medios: audio y video (BLOQUE D)
 
 #### 4.1. APIs Multimedia en el Navegador: `MediaDevices` y `getUserMedia()`
 La captura de audio y video local en aplicaciones web modernas está estandarizada por la especificación W3C **Media Capture and Streams API** [18]. La puerta de entrada para interactuar con el hardware de medios del usuario es la interfaz `navigator.mediaDevices` [18].
@@ -236,12 +237,12 @@ Un punto técnico vital para la arquitectura del laboratorio es entender la dife
 Un contenedor Docker se ejecuta sobre un entorno aislado sin acceso directo a los dispositivos de hardware del host anfitrión (como cámaras USB o tarjetas de sonido) a menos que se mapeen explícitamente mediante flags de privilegios como `--device /dev/video0` [4]. Sin embargo, en una arquitectura WebRTC web estándar, **el contenedor Docker solo ejecuta el servidor web y el servidor de señalización** (Node.js, Python, etc.) [10].
 
 ##### Ubicación de la Captura Multimedia
-La captura multimedia (`getUserMedia()`) **siempre ocurre en el cliente, dentro del navegador web del usuario anfitrión** [19]. El código JavaScript cliente descargado desde el contenedor se ejecuta localmente en el motor del navegador (Chrome, Firefox, Edge). Por ende, el navegador cliente accede a los controladores de cámara locales del equipo físico sin importar que el servidor de la aplicación esté corriendo dentro de un contenedor Docker aislado.
+La captura multimedia (`getUserMedia()`) **siempre ocurre en el cliente, dentro del navegador web del usuario anfitrión** [10]. El código JavaScript cliente descargado desde el contenedor se ejecuta localmente en el motor del navegador (Chrome, Firefox, Edge). Por ende, el navegador cliente accede a los controladores de cámara locales del equipo físico sin importar que el servidor de la aplicación esté corriendo dentro de un contenedor Docker aislado.
 
 Si el sistema se desplegara en Máquinas Virtuales donde el navegador web se ejecutara *dentro* de la propia máquina virtual, sería necesario configurar el passthrough de dispositivos USB en el hipervisor (VirtualBox/VMware) para redirigir la cámara web física hacia el sistema operativo huésped de la MV [4].
 
 #### 4.4. Integración de Pistas Multimedia en `RTCPeerConnection`
-Una vez obtenido el `MediaStream` local mediante `getUserMedia()`, las pistas individuales (`MediaStreamTrack`) deben adjuntarse al objeto `RTCPeerConnection` para ser codificadas y transmitidas al nodo remoto [11]. Al invocar `addTrack()`, la `RTCPeerConnection` crea un objeto `RTCRtpTransceiver` responsable de gestionar el envío y la recepción del flujo RTP para esa pista específica [8]. En el extremo receptor, la `RTCPeerConnection` remota dispara el evento `ontrack`, entregando la `MediaStreamTrack` recibida para asignarla al elemento HTML `<video>` o `<audio>` mediante `videoElement.srcObject = event.streams[0]` [19].
+Una vez obtenido el `MediaStream` local mediante `getUserMedia()`, las pistas individuales (`MediaStreamTrack`) deben adjuntarse al objeto `RTCPeerConnection` para ser codificadas y transmitidas al nodo remoto [11]. Al invocar `addTrack()`, la `RTCPeerConnection` crea un objeto `RTCRtpTransceiver` responsable de gestionar el envío y la recepción del flujo RTP para esa pista específica [8]. En el extremo receptor, la `RTCPeerConnection` remota dispara el evento `ontrack`, entregando la `MediaStreamTrack` recibida para asignarla al elemento HTML `<video>` o `<audio>` mediante `videoElement.srcObject = event.streams[0]` [10].
 
 
 #### 4.5. Códecs de Audio y Video en WebRTC: VP8, VP9, H.264 y Opus
@@ -281,7 +282,7 @@ El consumo de ancho de banda en una videollamada WebRTC varía en función de la
 ##### El Stack de Protocolos de `RTCDataChannel`
 La arquitectura de red que sustenta a `RTCDataChannel` está estructurada en una pila de protocolos de capas superpuestas [13]:
 
-1.  **UDP (User Datagram Protocol):** Proporciona el transporte sin conexión y atraviesa dispositivos NAT tras el proceso de punching de agujeros de ICE [19].
+1.  **UDP (User Datagram Protocol):** Proporciona el transporte sin conexión y atraviesa dispositivos NAT tras el proceso de punching de agujeros de ICE [10].
 2.  **DTLS (Datagram Transport Layer Security):** Proporciona confidencialidad, autenticidad e integridad mediante cifrado TLS sobre datagramas UDP, derivando las claves de sesión mediante certificados autofirmados [13].
 3.  **SCTP (Stream Control Transport Protocol - RFC 8831 / RFC 8832):** Opera sobre DTLS. SCTP es el protocolo responsable de la multiplexación de múltiples canales virtuales (hasta 65,534 sub-canales) dentro de la misma asociación, garantizando el control de congestión, el control de flujo y la configurabilidad de modos de retransmisión [13].
 
@@ -324,8 +325,554 @@ En el nodo receptor, cada fragmento de 16 KB llega a través del evento `dataCha
 ##### Verificación de Integridad del Archivo (Checksum Hashing)
 Para garantizar formalmente que el archivo reensamblado no sufrió corrupción durante la transferencia, la aplicación debe calcular un hash criptográfico (como **SHA-256**) sobre la totalidad del archivo en el emisor antes de iniciar la transmisión y enviarlo en los metadatos iniciales del archivo. Al finalizar el reensamblaje, el receptor calcula independientemente el hash SHA-256 sobre el `Blob` final generado mediante la API `crypto.subtle.digest(SHA-256, fileBuffer)` y compara ambos hashes. Si coinciden exactamente, el archivo se declara completo e íntegro [4].
 
+### CAPÍTULO 6. Selección de Tecnologías y Diseño de la Interfaz y Servidor (BLOQUE F)
+
+#### 6.1. Selección y Justificación del Stack Tecnológico del Servidor
+El diseño del servidor en una arquitectura de comunicación en tiempo real basada en WebRTC constituye el núcleo de la capa de control y señalización [4]. Aunque el tráfico pesado de audio, video y datos se transporta directamente entre los pares (P2P), el servidor de señalización debe gestionar la concurrencia de conexiones persistentes, la serialización de mensajes de control y el enrutamiento de objetos SDP (Session Description Protocol) y candidatos ICE con la mínima latencia posible [14].
+
+Para la implementación del servidor en el mensajero del laboratorio, se evalúan dos alternativas tecnológicas principales en el ámbito de los sistemas distribuidos:
+
+##### 1. Runtime Node.js con Framework Express y Biblioteca WebSocket (`ws`)
+Node.js es un entorno de ejecución de JavaScript de código abierto construido sobre el motor V8 de Google. Su arquitectura de I/O está guiada por eventos y opera sobre un bucle de eventos (Event Loop) monohilo no bloqueante [4]. Esta arquitectura es excepcionalmente eficiente para aplicaciones de señalización, donde la carga de trabajo no requiere procesamiento computacional intensivo de CPU (como transcodificación de video), sino la conmutación rápida de miles de mensajes JSON concurrentes a través de sockets TCP de larga duración [14].
+
+Las ventajas técnicas de Node.js en este contexto incluyen:
+*   **Afinidad y Homogeneidad de Lenguaje:** Permite utilizar JavaScript tanto en el cliente (navegador web) como en el servidor. Esto facilita compartir tipos de datos, validaciones de esquemas JSON para mensajes de señalización y lógica de serialización sin duplicación de código [4].
+*   **Baja Latencia de Intercambio de Mensajes:** La biblioteca nativa `ws` para Node.js ofrece una implementación de alto rendimiento del protocolo RFC 6455 con un footprint de memoria mínimo por socket abierto [14].
+*   **Integración Sencilla con Docker:** El ecosistema de Node.js proporciona imágenes base oficiales livianas (como `node:20-alpine`) que ocupan menos de 150 MB, acelerando la construcción y el despliegue de contenedores en Docker Compose [4].
+
+##### 2. Runtime Python con Framework FastAPI / Asyncio y Biblioteca `websockets`
+Python ofrece capacidades avanzadas mediante su módulo `asyncio` y frameworks modernos como FastAPI o Tornado para manejar peticiones asíncronas [4]. FastAPI proporciona tipado estático opcional (mediante Pydantic) y generación automática de documentación OpenAPI.
+
+Sin embargo, frente a Node.js, Python presenta ligeras desventajas para este proyecto específico:
+*   **Heterogeneidad de Lenguajes:** Exige mantener dos stacks lingüísticos distintos (JavaScript en el cliente y Python en el servidor), lo que incrementa la complejidad del proyecto de laboratorio.
+*   **Overhead de Concurrencia:** Aunque `asyncio` proporciona concurrencia asíncrona, el rendimiento de serialización/deserialización JSON en Python puro es ligeramente inferior al motor V8 de Node.js bajo alta densidad de mensajes.
+
+##### Justificación de la Elección
+Se selecciona **Node.js con Express y la biblioteca `ws`** como el stack tecnológico para el servidor de señalización del mensajero [4]. Esta decisión se justifica por la velocidad de procesamiento de tramas WebSocket, la ligereza del contenedor Docker resultante y la coherencia del modelo de eventos asíncronos compartido con la API cliente de WebRTC.
+
+#### 6.2. Arquitectura de la Interfaz Cliente: HTML5/JavaScript Vanilla vs. Frameworks SPA
+La interfaz de usuario del mensajero WebRTC debe ejecutarse en el navegador web del usuario y gestionar tres tareas concurrentes: el renderizado gráfico de la interfaz, el control de las APIs nativas del navegador (`MediaDevices`, `RTCPeerConnection`, `RTCDataChannel`) y la manipulación del DOM en respuesta a eventos de red en tiempo real [18], [8].
+
+Para el desarrollo del cliente se consideran dos enfoques de arquitectura de front-end:
+
+##### 1. JavaScript Nativo (Vanilla JS) con HTML5 y CSS3
+Este enfoque prescinde de cualquier framework o biblioteca de terceros, utilizando exclusivamente las APIs nativas que el navegador web expone de forma estándar [4].
+
+Ventajas técnicas:
+*   **Cero Dependencias y Compilación Nula:** No requiere herramientas de construcción (build tools) como Webpack, Vite o Babel, ni procesos de transpilación. El código fuente escrito se ejecuta directamente en el navegador sin capas de abstracción intermedias [4].
+*   **Control Directo del DOM y Streams de Video:** Las referencias a los elementos HTML `<video>` y `<audio>` se manipulan directamente mediante asignaciones nativas de `srcObject` (`videoElement.srcObject = mediaStream`), evitando los problemas de sincronización de estado y re-renderizados innecesarios que ocurren frecuentemente en frameworks reactivos con Virtual DOM [10].
+*   **Tamaño de Bundle Mínimo:** La aplicación web se reduce a archivos estáticos de unos pocos Kilobytes (`index.html`, `style.css`, `app.js`), garantizando que la carga de la interfaz desde el contenedor Docker sea instantánea.
+
+##### 2. Frameworks de Página Única (SPA: React, Vue, Angular)
+Los frameworks SPA introducen arquitecturas basadas en componentes, manejo declarativo de estado y Virtual DOM [4].
+
+Aunque son ideales para aplicaciones web empresariales complejas con decenas de vistas, para el mensajero WebRTC del laboratorio presentan limitaciones:
+*   **Overhead de Abstracción:** El ciclo de vida de los componentes en React/Vue puede entrar en conflicto con los eventos asíncronos nativos de `RTCPeerConnection` (como `ontrack` o `onicecandidate`), exigiendo el uso de referencias mutables (`useRef`) para evitar reconexiones no deseadas por re-renderizados.
+*   **Cadena de Build Compleja:** Requieren configurar entornos de desarrollo con Node Package Manager (`npm`), paquetes pesados en `node_modules` y scripts de compilación, complicando la estructura del repositorio de investigación.
+
+##### Justificación de la Elección
+Se selecciona **HTML5 y JavaScript nativo (Vanilla JS)** para la interfaz del cliente [4]. Esta elección garantiza la máxima transparencia pedagógica y de ingeniería, permitiendo observar directamente el funcionamiento de las APIs de WebRTC sin interferencia de abstracciones de frameworks.
+
+#### 6.3. Diseños Conceptual y Distribución Funcional de la Interfaz de Usuario (UI/UX)
+El diseño de la interfaz de usuario se estructura funcionalmente en tres zonas de interacción integradas dentro de un diseño web adaptable (Responsive Layout) [4]:
+
+##### 1. Zona Multimedia de Videollamada
+*   **Cuadrícula de Video (Video Grid):** Contendrá dos elementos HTML5 de reproducción de video:
+    *   `<video id="localVideo" autoplay muted playsinline>`: Muestra la vista previa de la cámara del usuario local. El atributo `muted` es obligatorio para evitar la realimentación acústica (eco) local.
+    *   `<video id="remoteVideo" autoplay playsinline>`: Muestra el flujo de video recibido en tiempo real desde el nodo remoto a través de la `RTCPeerConnection` [10]. El atributo `playsinline` es obligatorio en ambos videos para evitar que los navegadores móviles (especialmente Safari en iOS) fuercen la reproducción a pantalla completa, lo que rompería el diseño de la cuadrícula de video.
+*   **Panel de Control de Llamada:** Botones interactivos para la gestión del estado de la llamada:
+    *   *Botón Iniciar / Colgar Llamada:* Desencadena la creación de la oferta SDP o el cierre de la conexión `RTCPeerConnection.close()`.
+    *   *Botón Silenciar Micrófono (Toggle Mute Audio):* Alterna la propiedad `track.enabled = !track.enabled` en la pista de audio local.
+    *   *Botón Apagar Cámara (Toggle Video):* Alterna la propiedad `track.enabled` en la pista de video local [4].
+
+##### 2. Zona de Chat y Señalización
+*   **Indicador de Estado de Conexión:** Etiqueta visual que refleja dinámicamente el estado del servidor de señalización (WebSocket `OPEN`/`CLOSED`) y de la conexión entre pares (`RTCPeerConnection.connectionState`: `new`, `connecting`, `connected`, `disconnected`) [4].
+*   **Historial de Mensajes:** Área de texto con desplazamiento automático donde se renderizan los mensajes de chat enviados y recibidos a través del canal de datos `RTCDataChannel` [13].
+*   **Campo de Entrada y Envío:** Formulario compuesto por un `<input type="text">` y un botón de envío que desencadena la transmisión del mensaje formateado en JSON sobre el canal de datos.
+
+##### 3. Zona de Transferencia de Archivos
+*   **Selector de Archivos:** Componente `<input type="file">` que permite al usuario seleccionar archivos locales de cualquier formato (incluyendo archivos de prueba de 20 MB o más) [4].
+*   **Barra de Progreso e Indicadores Metrológicos:**
+    *   Elemento HTML5 `<progress id="fileProgress" value="0" max="100">` que refleja el porcentaje de transferencia en tiempo real [4].
+    *   Métricas de rendimiento: Muestra la velocidad instantánea de transferencia (KB/s o MB/s), el total de bytes transferidos frente al tamaño total del archivo y el checksum de verificación de integridad **SHA-256** calculado tras el reensamblaje [4].
 
 ---
+
+### CAPÍTULO 7. Especificación Formal de Arquitectura del Sistema Distribuido (BLOQUE G)
+
+#### 7.1. Modelo UML de Componentes y Dependencias entre Módulos
+La arquitectura de software del sistema distribuido se especifica mediante un **Diagrama de Componentes UML**, estructurado en dos subsistemas principales: el Servidor de Señalización (ejecutado dentro del contenedor Docker) y la Aplicación Cliente Web (ejecutada en el navegador) [4].
+
+##### 1. Componentes del Servidor de Señalización
+*   `SignalingServer`: Componente central basado en Node.js/Express que escucha conexiones HTTP/WebSocket entrantes.
+*   `WebSocketHandler`: Módulo responsable de realizar el handshake HTTP Upgrade (RFC 6455) y mantener el pool de sockets activos [14].
+*   `RoomManager`: Módulo que gestiona el registro de clientes, la asignación de identificadores de sala (`roomId`) y el enrutamiento dirigido de mensajes entre los nodos `nodo_alfa` y `nodo_beta` [4].
+
+##### 2. Componentes del Cliente Web
+*   `MediaManager`: Encapsula la interacción con la API `navigator.mediaDevices`. Responsable de solicitar permisos de hardware y capturar los flujos de audio y video mediante `getUserMedia()` [18].
+*   `SignalingClient`: Módulo encargado de gestionar la conexión WebSocket cliente con el servidor, enviar/recibir ofertas, respuestas y candidatos ICE codificados en JSON [4].
+*   `PeerConnectionManager`: Módulo central que instancia y administra la interfaz `RTCPeerConnection`. Gestiona la negociación SDP, la adición de pistas multimedia (`addTrack`), la recolección de candidatos ICE (`icecandidate`) y el estado de la conexión de red [9].
+*   `DataChannelManager`: Responsable de crear y manipular la interfaz `RTCDataChannel` para la transmisión de mensajes de chat en tiempo real en modo fiable y ordenado [13].
+*   `FileTransferManager`: Módulo especializado en la transferencia de archivos. Ejecuta la fragmentación de archivos en chunks de 16 KB, gestiona el control de flujo utilizando las propiedades `bufferedAmount` y `bufferedAmountLowThreshold`, reensambla los fragmentos recibidos en un objeto `Blob` y calcula el hash criptográfico SHA-256 mediante `crypto.subtle.digest` para verificar la integridad del archivo [4], [13].
+
+```mermaid
+    classDiagram
+    direction TB
+
+    namespace ServidorSenalizacion {
+        class SignalingServer {
+            +start(port)
+            +onConnection(ws)
+        }
+        class WebSocketHandler {
+            +handshake(req)
+            +broadcast(msg)
+        }
+        class RoomManager {
+            -Map~roomId, Set~clients~~ rooms
+            +joinRoom(client, roomId)
+            +leaveRoom(client)
+            +routeMessage(sender, target, msg)
+        }
+    }
+
+    namespace ClienteWeb {
+        class MediaManager {
+            +getUserMedia()
+            +getDisplayMedia()
+        }
+        class SignalingClient {
+            +connect(url)
+            +send(msg)
+            +onMessage(callback)
+        }
+        class PeerConnectionManager {
+            +RTCPeerConnection pc
+            +createOffer()
+            +createAnswer()
+            +addIceCandidate(candidate)
+        }
+        class DataChannelManager {
+            +RTCDataChannel channel
+            +sendChat(msg)
+            +onMessage(callback)
+        }
+        class FileTransferManager {
+            +sendFile(file)
+            +onChunk(chunk)
+            +verifyHash(hash)
+        }
+    }
+
+    SignalingServer --> WebSocketHandler : usa
+    WebSocketHandler --> RoomManager : delega
+    SignalingClient --> PeerConnectionManager : señalización
+    PeerConnectionManager --> DataChannelManager : crea canal
+    DataChannelManager --> FileTransferManager : transfiere
+    MediaManager --> PeerConnectionManager : addTrack()
+ ```
+#### 7.2. Modelo UML de Despliegue en Nodos Virtualizados con Docker
+La topología de infraestructura distribuida se formaliza mediante un **Diagrama de Despliegue UML**, el cual ilustra la disposición física y virtual de los nodos, redes y puertos involucrados en el laboratorio [4]:
+
+##### Entorno Físico Anfitrión (Host System)
+*   **Hardware / Host OS:** Representa el equipo físico de cómputo sobre el cual se ejecuta el Docker Engine.
+*   **Navegadores Web (Cliente A y Cliente B):** Se ejecutan en el sistema operativo anfitrión, abriendo las interfaces web servidas por los nodos virtualizados.
+
+##### Entorno Virtualizado Docker (Docker Engine & Docker Compose)
+Los dos nodos distribuidos se instancian como contenedores independientes conectados a una red virtual personalizada de tipo `bridge` denominada `webrtc_net` [6]:
+
+1.  **Nodo Distribuido 1 (`nodo_alfa`):**
+    *   *Contenedor:* Instancia ejecutada a partir de la imagen `mensajero-webrtc:latest`.
+    *   *Dirección IP Virtual:* Asignada dinámicamente en la subred de la red bridge (ej. `172.20.0.2`).
+    *   *Puerto Interno:* El servidor Node.js escucha internamente en el puerto `3000` (`EXPOSE 3000`).
+    *   *Puerto Publicado (Host Mapping):* Mapeado al host anfitrión mediante la directiva `ports: ["3001:3000"]` [7].
+2.  **Nodo Distribuido 2 (`nodo_beta`):**
+    *   *Contenedor:* Segunda instancia independiente de la misma imagen.
+    *   *Dirección IP Virtual:* Asignada dinámicamente en la subred bridge (ej. `172.20.0.3`).
+    *   *Puerto Interno:* Escucha en el puerto `3000`.
+    *   *Puerto Publicado:* Mapeado al host anfitrión mediante `ports: ["3002:3000"]` [7].
+
+##### Protocolos y Puertos de Conexión Inter-Nodo
+*   **Señalización Servidor-Cliente (HTTP / WebSocket):**
+    *   El Cliente A abre el navegador en `http://localhost:3001`, estableciendo una conexión WebSocket `ws://localhost:3001/signaling` con `nodo_alfa`.
+    *   El Cliente B abre `http://localhost:3002`, conectándose a `ws://localhost:3002/signaling` con `nodo_beta`.
+*   **Señalización Inter-Nodo (WebSocket / HTTP Relay):**
+    *   Los contenedores `nodo_alfa` y `nodo_beta` se comunican entre sí a través de la red privada `webrtc_net` utilizando la resolución por nombre de servicio del DNS interno de Docker (`ws://nodo_beta:3000/peer-signaling`) [6].
+*   **Conexión P2P de Medios y Datos (WebRTC SRTP / SCTP sobre UDP):**
+    *   Una vez completada la señalización, la conexión directa de audio, video y canales de datos entre el Cliente A y el Cliente B fluye mediante datagramas UDP cifrados sobre puertos dinámicos negociados por ICE (enrutados a través de las interfaces de red del host anfitrión) [9].
+
+```mermaid
+    flowchart TB
+    subgraph HOST["Equipo Anfitrión (Host OS)"]
+        direction TB
+
+        subgraph BROWSERS["Navegadores Web"]
+            CA["Cliente A\nhttp://localhost:3001"]
+            CB["Cliente B\nhttp://localhost:3002"]
+        end
+
+        subgraph DOCKER["Docker Engine + Docker Compose"]
+            direction LR
+
+            subgraph NET["Red bridge: webrtc_net"]
+                direction TB
+                NA["nodo_alfa\nContenedor\nIP: 172.20.0.2\nPuerto interno: 3000\nEXPOSE 3000"]
+                NB["nodo_beta\nContenedor\nIP: 172.20.0.3\nPuerto interno: 3000\nEXPOSE 3000"]
+                NA <-->|"ws://nodo_beta:3000/peer-signaling\n(Señalización inter-nodo)"| NB
+            end
+
+            NA -.->|"PUBLISH 3001:3000"| PORT_A["Puerto host: 3001"]
+            NB -.->|"PUBLISH 3002:3000"| PORT_B["Puerto host: 3002"]
+        end
+
+        CA -->|"HTTP / WebSocket\nws://localhost:3001/signaling"| PORT_A
+        CB -->|"HTTP / WebSocket\nws://localhost:3002/signaling"| PORT_B
+
+        CA <-.->|"WebRTC P2P\nSRTP / SCTP sobre UDP\n(puertos dinámicos ICE)"| CB
+    end
+  ```
+#### 7.3. Diagramas UML de Funcionamiento: Secuencia y Estados
+
+##### 1. Diagrama de Secuencia: Inicio de Videollamada (Señalización, Offer, Answer y Trickle ICE)
+El establecimiento de la videollamada sigue una secuencia temporal estricta [9]:
+
+1.  **Captura Multimedia:** El Cliente A invoca `getUserMedia()`, obteniendo el `MediaStream` local y asociando sus pistas a la `RTCPeerConnection` mediante `addTrack()` [18].
+2.  **Generación de la Oferta:** El Cliente A invoca `createOffer()` y `setLocalDescription(offer)`. El estado de señalización de A pasa a `have-local-offer` [8].
+3.  **Envío de Oferta por Señalización:** Cliente A envía el mensaje JSON `type: offer` al Servidor de Señalización A vía WebSocket, el cual lo retransmite al Servidor B y este al Cliente B [4].
+4.  **Recepción y Respuesta en Cliente B:** Cliente B recibe la oferta, ejecuta `setRemoteDescription(offer)` (estado pasa a `have-remote-offer`), genera su respuesta mediante `createAnswer()` y aplica `setLocalDescription(answer)`, cambiando su estado a `stable` [8].
+5.  **Envío de Respuesta a A:** Cliente B transmite `type: answer` de vuelta al Cliente A.
+6.  **Consolidación de Sesión en A:** Cliente A ejecuta `setRemoteDescription(answer)`. Su estado pasa a `stable`.
+7.  **Intercambio Trickle ICE:** En paralelo a la negociación SDP, ambos clientes disparan el evento `icecandidate` a medida que descubren sus candidatos de red local, srflx (STUN) y relay (TURN). Los candidatos se envían por WebSocket y se aplican en el extremo opuesto mediante `addIceCandidate(candidate)` [9]. Al completarse las comprobaciones de conectividad, se establece la sesión P2P directa de medios [9].
+
+```mermaid
+    sequenceDiagram
+    autonumber
+    participant A as Cliente A
+    participant SA as Servidor Señalización A
+    participant SB as Servidor Señalización B
+    participant B as Cliente B
+
+    Note over A,B: Fase 1: Captura y Oferta SDP
+    A->>A: getUserMedia() + addTrack()
+    A->>A: createOffer() + setLocalDescription()
+    A->>SA: JSON {type: "offer", sdp: ...}
+    SA->>SB: Reenvío inter-nodo (Fase 3)
+    SB->>B: JSON {type: "offer", sdp: ...}
+    B->>B: setRemoteDescription(offer)
+    B->>B: createAnswer() + setLocalDescription()
+
+    Note over A,B: Fase 2: Respuesta SDP
+    B->>SB: JSON {type: "answer", sdp: ...}
+    SB->>SA: Reenvío inter-nodo (Fase 3)
+    SA->>A: JSON {type: "answer", sdp: ...}
+    A->>A: setRemoteDescription(answer)
+
+    Note over A,B: Fase 3: Trickle ICE (paralelo)
+    A->>SA: JSON {type: "candidate", candidate: ...}
+    SA->>SB: Reenvío
+    SB->>B: JSON {type: "candidate", candidate: ...}
+    B->>B: addIceCandidate(candidate)
+    B->>SB: JSON {type: "candidate", candidate: ...}
+    SB->>SA: Reenvío
+    SA->>A: JSON {type: "candidate", candidate: ...}
+    A->>A: addIceCandidate(candidate)
+
+    Note over A,B: Fase 4: Conexión P2P establecida
+    A-->>B: Flujo SRTP (audio/video) directo
+    B-->>A: Flujo SRTP (audio/video) directo
+  ```
+##### 2. Diagrama de Secuencia: Transferencia de Archivo por Fragmentos (Chunks)
+El flujo de transmisión de un archivo grande en `RTCDataChannel` se secuencia dinámicamente [4]:
+
+1.  **Inicio y Envío de Metadatos:** El emisor lee las propiedades del archivo (`name`, `size`, `type`) y calcula su checksum criptográfico SHA-256 inicial (`crypto.subtle.digest`). Envía un mensaje inicial de metadatos en formato JSON a través del `RTCDataChannel` ordenado y fiable [4].
+2.  **Lectura y Fragmentación:** El emisor instancia un `FileReader` o utiliza la API `file.slice()` para extraer fragmentos binarios de **16 KB (16384 bytes)** [4].
+3.  **Bucle de Envío con Control de Flujo:**
+    *   El emisor llama a `dataChannel.send(chunkBuffer)`.
+    *   Antes de enviar el siguiente bloque de chunks, evalúa si `dataChannel.bufferedAmount > bufferedAmountLowThreshold` (ej. 64 KB) [13].
+    *   Si el búfer supera el umbral, el emisor pauta el bucle de envío y espera a que el navegador dispare el evento `onbufferedamountlow` [13].
+    *   Al recibirse `bufferedamountlow`, se reanuda la lectura y envío de los siguientes fragmentos.
+4.  **Reensamblaje e Verificación:** El receptor acumula cada `ArrayBuffer` en un arreglo de memoria. Al recibir la totalidad de los fragmentos indicados en los metadatos, crea un objeto `Blob` unificado, calcula su hash SHA-256 y lo compara con el hash enviado en los metadatos iniciales. Si coinciden, habilita la descarga o reproducción del archivo [4].
+
+```mermaid  
+sequenceDiagram
+    autonumber
+    participant E as Emisor
+    participant DC as RTCDataChannel
+    participant R as Receptor
+
+    Note over E,R: Fase 1: Metadatos e integridad
+    E->>E: Calcular SHA-256 del archivo
+    E->>DC: JSON {type: "file-meta", name, size, hash}
+    DC->>R: Metadatos recibidos
+    R->>R: Preparar buffer de recepción
+
+    Note over E,R: Fase 2: Envío de chunks con control de flujo
+    loop Mientras queden chunks
+        E->>E: file.slice(offset, offset + 16384)
+        E->>DC: send(chunkBuffer) [16 KB]
+        DC->>R: onmessage(ArrayBuffer)
+        R->>R: Acumular chunk en array
+        alt bufferedAmount > bufferedAmountLowThreshold
+            E->>E: Pausar envío
+            Note over E: Esperar evento onbufferedamountlow
+            DC-->>E: bufferedamountlow
+            E->>E: Reanudar envío
+        end
+    end
+
+    Note over E,R: Fase 3: Reensamblaje y verificación
+    R->>R: Concatenar chunks en Blob
+    R->>R: Calcular SHA-256 del Blob
+    alt Hash coincide
+        R->>R: Archivo íntegro → habilitar descarga
+    else Hash no coincide
+        R->>R: Error de integridad → solicitar reenvío
+    end    
+```
+##### 3. Diagrama de Estados de la Conexión WebRTC
+El objeto `RTCPeerConnection` pasa por máquinas de estado formales durante su ciclo de vida [8]:
+*   **Estados de Señalización (`signalingState`):** `stable` -> `have-local-offer` / `have-remote-offer` -> `stable`.
+*   **Estados de Conexión de Red (`connectionState`):** `new` -> `connecting` -> `connected` -> `disconnected` / `failed` / `closed` [8].
+
+```mermaid  
+stateDiagram-v2
+    [*] --> new: RTCPeerConnection creada
+    new --> connecting: setLocalDescription + setRemoteDescription
+    connecting --> connected: ICE completa (candidatos válidos)
+    connecting --> failed: ICE falla (sin ruta)
+    connected --> disconnected: Pérdida temporal de red
+    disconnected --> connected: Reconexión ICE exitosa
+    disconnected --> failed: Timeout de reconexión
+    connected --> closed: close() invocado
+    failed --> closed: close() invocado
+    disconnected --> closed: close() invocado
+    closed --> [*]
+
+    note right of new
+        signalingState: stable
+        connectionState: new
+    end note
+    note right of connecting
+        signalingState: have-local-offer
+        o have-remote-offer
+    end note
+    note right of connected
+        signalingState: stable
+        Flujos SRTP/SCTP activos
+    end note
+ ```
+#### 7.4. Cuadro Comparativo de Selección Tecnológica y Matriz de Decisiones
+Se presenta el cuadro consolidado de decisiones técnicas tomadas para la arquitectura del proyecto [4]:
+
+| Componente | Tecnología Seleccionada | Alternativa Descartada | Motivo Técnico de la Elección |
+| :--- | :--- | :--- | :--- |
+| **Plataforma Virtual** | Contenedores Docker | Máquinas Virtuales | Menor consumo de RAM/CPU, arranque milimétrico y despliegue declarativo con Docker Compose [5] |
+| **Servidor Señalización** | Node.js + Express + `ws` | Python + FastAPI | Procesamiento asíncrono no bloqueante en V8 y coincidencia de lenguaje JS cliente-servidor [4] |
+| **Interfaz Cliente** | Vanilla JS + HTML5 | React / Vue SPA | Cero herramientas de build, tamaño mínimo de bundle y control directo de elementos `<video>` DOM [4] |
+| **Protocolo Señalización**| WebSocket (RFC 6455) | HTTP Polling / SSE | Canal full-duplex bidireccional persistente sobre un único socket TCP sin overhead HTTP [15] |
+| **Transporte de Archivos**| RTCDataChannel (SCTP) | HTTP Upload a Servidor | Comunicación P2P directa sin sobrecargar el servidor central ni duplicar el ancho de banda [13] |
+
+#### 7.5. Análisis de Riesgos de Ingeniería y Estrategias de Mitigación
+Durante el diseño e implementación del mensajero distribuido se identifican los siguientes riesgos de ingeniería [4]:
+
+1.  **Riesgo 1: Bloqueo de Acceso a Cámara/Micrófono por Falta de Contexto Seguro**
+    *   *Diagnóstico:* Si la interfaz web se abre mediante una dirección IP privada de red (ej. ej. http://192.168.1.100:3001), el navegador desactivará `navigator.mediaDevices` al no ser un origen HTTPS ni `localhost` [18].
+    *   *Mitigación:* Forzar el acceso de pruebas a través de `http://localhost:3001` y `http://localhost:3002`, o generar certificados SSL/TLS autofirmados para el servidor web de Node.js cargando la interfaz mediante HTTPS.
+2.  **Riesgo 2: Desbordamiento de Memoria RAM por Transferencia Descontrolada de Archivos**
+    *   *Diagnóstico:* Intentar enviar un archivo de 20 MB en un bucle síncrono sin verificar la cola de transmisión saturará la memoria del navegador y colapsará la pestaña [13].
+    *   *Mitigación:* Fragmentación estricta en chunks de 16 KB y control de flujo guiado por eventos utilizando `bufferedAmountLowThreshold` y `onbufferedamountlow` [13].
+3.  **Riesgo 3: Fallo en el Descubrimiento de Rutas P2P por Aislamiento de Red Docker**
+    *   *Diagnóstico:* Los contenedores Docker en redes bridge utilizan NAT interno, lo que puede impedir que `RTCPeerConnection` descubra candidatos host válidos si los clientes se ejecutan fuera de la red virtual [6].
+    *   *Mitigación:* Configurar un servidor STUN público predeterminado (`stun:stun.l.google.com:19302`) en la `RTCConfiguration` para descubrir candidatos server-reflexive (`srflx`) [9].
+
+---
+
+### CAPÍTULO 8. Arquitecturas Avanzadas para Videoconferencia Grupal y Transmisión de Pantalla (BLOQUE H - RETO)
+
+#### 8.1. Evaluación Comparativa de Topologías Multi-usuario: Mesh (Malla), SFU y MCU
+El escalamiento de aplicaciones WebRTC desde llamadas punto a punto (1-a-1) hacia videoconferencias grupales (4 o más participantes) exige seleccionar una topología de arquitectura de medios adecuada [19], [20].
+
+Existen tres paradigmas arquitectónicos para gestionar flujos multimedia multiparte:
+
+##### 1. Arquitectura Malla entre Pares (Mesh P2P Full-Mesh)
+En una topología Mesh, no existe ningún servidor de medios intermedio [19]. Cada participante establece una conexión `RTCPeerConnection` independiente y directa con cada uno de los demás integrantes de la sala [4].
+
+Análisis metrológico de red para $N$ participantes:
+*   **Número Total de Conexiones en el Grupo:** $C = \frac{N(N-1)}{2}$. Para $N=4$ participantes, se generan $C = 6$ conexiones `RTCPeerConnection` activas en la red.
+*   **Flujos de Subida (Uplink Streams):** Cada cliente debe codificar y transmitir su flujo de video y audio $N-1$ veces. Para $N=4$, cada usuario transmite **3 flujos de subida simultáneos**.
+*   **Flujos de Bajada (Downlink Streams):** Cada cliente recibe $N-1$ flujos de bajada (3 flujos para $N=4$).
+
+*Ventajas:*
+*   Cero costos de infraestructura de servidores de medios (solo requiere servidor de señalización y STUN/TURN) [19].
+*   Cifrado extremo a extremo nativo y latencia de transporte P2P mínima [20].
+
+*Limitaciones:*
+*   **Consumo de Ancho de Banda Asimétrico:** El ancho de banda de subida del cliente crece linealmente $O(N-1)$ por usuario y cuadráticamente $O(N^2)$ a nivel global [20]. Para $N=4$ en HD (720p a 2 Mbps por flujo), el cliente requiere un canal de subida sostenido de $6\text{ Mbps}$, lo que satura la mayoría de conexiones residenciales.
+*   **Carga Computacional de CPU:** El dispositivo de cada cliente debe ejecutar $N-1$ instancias de codificación de video en paralelo, provocando sobrecalentamiento y degradación de FPS [19].
+*   *Viabilidad:* Es la solución ideal para salas pequeñas de 2 a 4 participantes [4].
+
+##### 2. Arquitectura SFU (Selective Forwarding Unit)
+La arquitectura SFU introduce un servidor de medios centralizado que actúa como un enrutador o conmutador selectivo de paquetes RTP de nivel de aplicación [19]. Cada participante envía su flujo multimedia una única vez al servidor SFU. El SFU no decodifica ni mezcla las imágenes; simplemente inspecciona los encabezados RTP y reenvía (forwarding) las pistas seleccionadas a los demás suscriptores [20].
+
+Análisis metrológico para $N=4$ participantes:
+*   **Flujos de Subida:** Cada cliente envía **1 solo flujo de subida** al SFU ($O(1)$).
+*   **Flujos de Bajada:** Cada cliente recibe $N-1$ flujos de bajada individuales desde el SFU.
+
+*Ventajas:*
+*   **Escalabilidad Elevada:** Reduce drásticamente el uso de ancho de banda de subida en el cliente, permitiendo salas de decenas o cientos de usuarios [19].
+*   **Soporte de Simulcast y Adaptación de Capas:** El cliente puede enviar múltiples capas de resolución (ej. 720p, 360p, 180p) y el SFU entrega a cada participante la capa que mejor se adapte a su ancho de banda descendente [19].
+*   Bajo consumo de CPU en el servidor al no requerir decodificación ni transcodificación de video [19].
+
+*Limitaciones:*
+*   Requiere desplegar, administrar y escalar una flota de servidores de medios especializados (mediasoup, Janus, LiveKit) [19], [4].
+
+##### 3. Arquitectura MCU (Multipoint Control Unit)
+La arquitectura MCU centraliza el procesamiento de medios en el servidor [19]. El servidor MCU recibe los flujos de todos los participantes, los decodifica completamente en memoria, realiza una composición o mezcla gráfica (creando una sola cuadrícula de video compuesta) y codifica un nuevo flujo de video único que se transmite a todos los participantes [20].
+
+Análisis metrológico para $N=4$ participantes:
+*   **Flujos de Subida / Bajada:** Cada cliente envía **1 flujo de subida** y recibe **1 flujo de bajada mixto** ($O(1)$ en ambas direcciones).
+
+*Ventajas:*
+*   Requerimientos mínimos para el cliente: ideal para dispositivos antiguos o con ancho de banda extremadamente severo [19].
+
+*Limitaciones:*
+*   **Consumo Masivo de CPU/GPU en Servidor:** Transcodificar múltiples flujos de video HD en tiempo real exige una infraestructura de servidores costosa [19].
+*   **Latencia Adicional:** El proceso de decodificación, composición gráfica y recodificación introduce una demora de procesamiento considerable [19].
+
+##### Matriz Comparativa de Arquitecturas Multipartes
+| Criterio | Malla entre Pares (Mesh P2P) | SFU (Selective Forwarding Unit) | MCU (Multipoint Control Unit) |
+| :--- | :--- | :--- | :--- |
+| **Flujos Subida ($N=4$)** | 3 flujos por cliente ($O(N-1)$) [4] | 1 flujo por cliente ($O(1)$) [19] | 1 flujo por cliente ($O(1)$) [19] |
+| **Flujos Bajada ($N=4$)** | 3 flujos por cliente ($O(N-1)$) [4] | 3 flujos por cliente ($O(N-1)$) [19] | 1 flujo mixto por cliente ($O(1)$) [19] |
+| **Consumo CPU Cliente** | Muy Alto (Múltiples codificadores) [19] | Medio (1 codificador + N decodificadores) | Mínimo (1 codificador + 1 decodificador) |
+| **Consumo CPU Servidor**| Nulo (Solo señalización) [20] | Bajo (Solo enrutamiento RTP sin decodificar) | Extremadamente Alto (Decodificación/Mezcla) |
+| **Latencia End-to-End** | Mínima (Directa P2P) [20] | Muy Baja (Relay directo RTP) [19] | Media-Alta (Overhead de transcodificación) |
+| **Infraestructura Requerida**| Ninguna (Servidor web básico) [20] | Servidor de Medios (mediasoup/Janus) | Servidor de Procesamiento Gráfico / GPU |
+
+#### 8.2. Integración de Servidores de Medios SFU en Entornos Virtualizados Docker
+Si se selecciona la arquitectura SFU para implementar el RETO del laboratorio, es necesario integrar un servidor de medios de código abierto dentro de la topología de Docker Compose [4].
+
+##### Opciones de Servidores SFU
+*   **mediasoup:** Biblioteca de servidor de medios WebRTC para Node.js/C++. Destaca por su rendimiento extremo, arquitectura asíncrona y diseño modular orientado a aplicaciones personalizadas.
+*   **Janus WebRTC Server:** Gateway WebRTC multipropósito escrito en C por Meetecho, altamente modular basado en complementos (plugins).
+*   **LiveKit:** Plataforma moderna de infraestructura WebRTC basada en Go y Rust.
+
+##### Integración en Docker Compose
+Para integrar un servidor SFU como `mediasoup` en el proyecto del laboratorio:
+1.  **Servicio Dedicado en `docker-compose.yml`:** Se declara un servicio `sfu_node` corriendo el runtime de mediasoup dentro de la red virtual `webrtc_net`.
+2.  **Mapeo de Puertos UDP:** Los servidores SFU requieren abrir un rango amplio de puertos UDP (ej. `40000-49999/udp`) en el host para recibir y enviar el tráfico RTP/RTCP de audio, video y simulcast desde y hacia los clientes.
+3.  **Señalización Interna Inter-Servidor:** El servidor de señalización de Node.js se comunica con el motor mediasoup mediante IPC interno o conexiones WebSocket locales, coordinando la creación de `Routers`, `Transports`, `Producers` (emisores) y `Consumers` (receptores).
+
+#### 8.3. Arquitectura de Salas y Enrutamiento de Mensajes Dirigidos en Señalización
+En una videollamada grupal (Mesh o SFU), la capa de señalización debe evolucionar de un modelo simple de par a par a una **arquitectura de señalización guiada por salas (Room-based Signaling)** [4].
+
+##### 1. Gestión de Estado de Salas en el Servidor
+El servidor de señalización mantiene una estructura de datos en memoria (ej. `Map<roomId, Set<clientSocket>>`) que rastrea todos los participantes conectados a cada sala:
+*   `join-room`: Evento enviado por un cliente al unirse a una sala. El servidor registra al nuevo cliente y notifica a los participantes existentes enviando el evento `user-connected` con el ID del nuevo nodo.
+*   `leave-room`: Notificación enviada cuando un cliente se desconecta. El servidor remueve al usuario y emite `user-disconnected` a los pares restantes para que cierren las instancias asociadas de `RTCPeerConnection`.
+
+##### 2. Mensajes Dirigidos (Targeted Signaling)
+En una topología Mesh multi-usuario, cada participante mantiene una `RTCPeerConnection` independiente con cada uno de los demás miembros. Por lo tanto, los mensajes de señalización **no pueden transmitirse en modo broadcast indiscriminado** [4].
+
+Cada mensaje SDP u Oferta de Candidato ICE debe incorporar de forma obligatoria los atributos de enrutamiento:
+```json
+{
+  "type": "offer",
+  "sender": "cliente_D",
+  "target": "cliente_A",
+  "sdp": { ... }
+}
+```
+Cuando el servidor de señalización recibe este mensaje de `cliente_D`, inspecciona el campo `"target"` y retransmite el mensaje de forma estrictamente puntual al WebSocket registrado de `cliente_A`. Si los participantes residen en nodos Docker distintos (`nodo_alfa` y `nodo_beta`), el servidor `nodo_alfa` enruta el mensaje a `nodo_beta` a través de la red `webrtc_net` para su entrega final al cliente objetivo [4].
+
+#### 8.4. Renegociación de Sesión, Conflicto de Colisión ("Glare") y el Patrón Perfect Negotiation
+
+##### 1. El Problema de la Renegociación
+Durante una llamada WebRTC activa, es común que las condiciones de la sesión cambien dinámicamente: un usuario enciende su cámara, añade una segunda pista de video para compartir pantalla o cambia el códec preferido [21]. Cuando esto ocurre, la API WebRTC dispara automáticamente el evento `onnegotiationneeded` sobre el objeto `RTCPeerConnection`, indicando que la aplicación debe generar una nueva Oferta SDP para actualizar los parámetros acordados [8].
+
+##### 2. El Fenómeno de Colisión de Ofertas ("Glare")
+En una arquitectura P2P simétrica, ambos extremos tienen la capacidad de iniciar una renegociación en cualquier momento. Si el Cliente A y el Cliente B intentan enviar una nueva Oferta SDP de forma simultánea, se produce un escenario de colisión conocido como **"Glare"** [21].
+
+Cuando ocurre un Glare:
+1.  Ambos pares invocan `createOffer()` y `setLocalDescription(offer)` al mismo tiempo.
+2.  El estado de señalización (`signalingState`) de ambos objetos `RTCPeerConnection` pasa a `have-local-offer` [21].
+3.  En este instante, el Cliente A recibe la oferta entrante del Cliente B mientras está en `have-local-offer`. La especificación de WebRTC establece que invocar `setRemoteDescription(offer)` cuando el estado ya es `have-local-offer` es una operación inválida que genera una excepción de error o bloquea la señalización en un punto muerto (deadlock) [8].
+
+##### 3. La Solución: El Patrón "Perfect Negotiation"
+Para resolver el problema del Glare de manera transparente e inmune a carreras de tiempo, el W3C estandarizó el patrón de diseño **Perfect Negotiation** [8], [21].
+
+El patrón Perfect Negotiation se apoya en tres principios clave:
+
+###### A. Asignación Arbitraria de Roles: Par Educado (Polite) y Par Impulsivo (Impolite)
+Al establecer la conexión, se asigna un rol booleano a cada par (por ejemplo, el cliente que inició la sala es `polite = false` y el cliente que se unió es `polite = true`) [21]:
+*   **Par Polite (Educado):** Es el par deferente. En caso de colisión de ofertas, cede el turno, descarta su propia oferta local y acepta la oferta remota del par contrario [8].
+*   **Par Impolite (Impulsivo):** Es el par dominante. En caso de colisión, ignora la oferta entrante y exige que el par contrario procese su oferta [8].
+
+###### B. Mecanismo de Rollback (Reversión de Oferta)
+Cuando el par Polite recibe una oferta en un estado de colisión (`offerCollision = description.type === "offer" && (!readyForOffer)`), la especificación de `RTCPeerConnection` en `setRemoteDescription(offer)` ejecuta automáticamente un **Rollback (Reversión)** interno [21], [8]:
+*   El Rollback restaura la `RTCPeerConnection` desde `have-local-offer` de vuelta al estado `stable`, descartando la descripción local pendiente [21].
+*   Una vez en estado `stable`, el par Polite aplica exitosamente la oferta del par Impolite con `setRemoteDescription(offer)` (pasando a `have-remote-offer`), genera su respuesta con `createAnswer()` y la envía de vuelta [8].
+*   Posteriormente, cuando la sesión retorna a `stable`, el evento `onnegotiationneeded` del par Polite se vuelve a disparar automáticamente para transmitir su modificación pendiente [21].
+
+###### C. Estrategia de Ignorar Ofertas (Impolite Peer Strategy)
+El par Impolite marca la variable booleana `ignoreOffer = !polite && offerCollision` [8]. Si se detecta colisión, el par Impolite retorna inmediatamente sin invocar `setRemoteDescription`, ignorando por completo la oferta entrante. Adicionalmente, el par Impolite suprime y descarta cualquier candidato ICE perteneciente a la oferta ignorada para prevenir errores en el motor ICE [8].
+
+#### 8.5. Captura y Transmisión de Pantalla: `getDisplayMedia()` frente a `getUserMedia()`
+La funcionalidad de compartir pantalla (Screen Sharing) permite a un usuario transmitir el contenido visual de su monitor en tiempo real a los demás miembros de la llamada [4].
+
+##### 1. Funcionamiento de `navigator.mediaDevices.getDisplayMedia()`
+La captura de pantalla está estandarizada por la especificación W3C **Screen Capture API** [22]. Se invoca mediante `navigator.mediaDevices.getDisplayMedia(constraints)` [4].
+
+Al ejecutarse `getDisplayMedia()`, el navegador despliega una interfaz nativa del sistema operativo que permite al usuario seleccionar con precisión qué superficie desea compartir:
+*   La pantalla completa del monitor (Entire Screen).
+*   Una ventana de aplicación específica (Application Window).
+*   Una pestaña individual del navegador (Browser Tab).
+
+##### 2. Diferencias Estructurales frente a `getUserMedia()`
+Existe una distinción profunda entre ambas APIs [4]:
+
+*   **Origen de la Fuente:** `getUserMedia()` solicita acceso a dispositivos físicos de entrada de hardware (cámara web física, micrófono integrado) [18]. `getDisplayMedia()` solicita acceso a superficies de visualización virtuales codificadas por software desde el gestor de ventanas del sistema operativo [22].
+*   **Requisito de Gesto de Usuario (User Gesture):** A diferencia de `getUserMedia()` que puede invocarse durante la carga si ya existen permisos concedidos, `getDisplayMedia()` **exige estrictamente una activación por gesto de usuario** (User Activation), como hacer clic explícito en un botón [4]. Intentar invocar `getDisplayMedia()` de forma programática en segundo plano lanzará una excepción `InvalidStateError`.
+*   **Finalización de la Pista (Track Ended Event):** La pista de video obtenida en `getDisplayMedia()` incorpora un control nativo del sistema operativo (una barra flotante que dice "Dejar de compartir"). Cuando el usuario pulsa ese botón nativo, la `MediaStreamTrack` dispara automáticamente el evento `onended` [4]. La aplicación debe escuchar este evento para limpiar el estado de la UI y restaurar la videollamada normal.
+
+#### 8.6. Estrategias de Sustitución y Adición de Pistas: `replaceTrack()` frente a `addTrack()`
+Para transmitir la pista de pantalla capturada a través de WebRTC, existen dos estrategias de implementación distintas [4], [8]:
+
+##### 1. Estrategia A: Sustitución de Pista con `RTCRtpSender.replaceTrack(withTrack)`
+En esta estrategia, no se modifica el número de transceptores ni de pistas acordadas en la sesión. Se obtiene el objeto `RTCRtpSender` asociado a la pista de video de la cámara y se invoca `sender.replaceTrack(screenTrack)` [8].
+
+*Mecanismo:* `replaceTrack()` conmuta la fuente multimedia en la capa del emisor RTP de forma transparente en el nivel de transporte [8].
+
+*Ventajas:*
+*   **Cero Renegociación SDP:** **No requiere ejecutar una nueva oferta/respuesta SDP** [8]. La sustitución de la fuente de video ocurre de forma instantánea sin alterar la máquina de estados de la `RTCPeerConnection`.
+*   **Ancho de Banda Constante:** Mantiene exactamente el mismo consumo de ancho de banda, ya que solo se transmite un flujo de video a la vez [4].
+
+*Inconvenientes:*
+*   **Exclusión Mutua de Video:** Mientras el usuario comparte pantalla, la imagen de su cámara web deja de transmitirse y se apaga en el receptor [4].
+
+##### 2. Estrategia B: Adición de Nueva Pista con `RTCPeerConnection.addTrack(screenTrack, stream)`
+En esta estrategia, la pista de pantalla se añade como una segunda pista de video independiente a la sesión existente mediante `peerConnection.addTrack(screenTrack, displayStream)` [4].
+
+*Mecanismo:* Invocó `addTrack()` crea un nuevo `RTCRtpTransceiver` en la conexión, lo que inmediatamente activa la bandera `negotiationneeded` [8].
+
+*Ventajas:*
+*   **Transmisión Simultánea (Picture-in-Picture):** El nodo receptor recibe simultáneamente el flujo de la cámara web del emisor y el flujo de la pantalla compartida en dos elementos `<video>` separados [4].
+
+*Inconvenientes:*
+*   **Renegociación SDP Obligatoria:** **Exige realizar una renegociación de sesión SDP completa** (intercambio de una nueva Oferta/Respuesta SDP a través de la señalización) [4]. Si no se maneja correctamente con el patrón Perfect Negotiation, puede desencadenar un conflicto de Glare [21].
+*   **Duplicación de Ancho de Banda:** Multiplica por dos el ancho de banda de subida de video exigido al cliente [4].
+
+##### Cuadro Comparativo de Estrategias para Compartir Pantalla
+| Criterio | Sustitución con `replaceTrack()` | Adición con `addTrack()` |
+| :--- | :--- | :--- |
+| **Renegociación SDP** | **No requiere renegociación** (Sin Offer/Answer) [8] | **Requiere renegociación obligatoria** (Offer/Answer) [4] |
+| **Visualización Simultánea** | No (Cámara y Pantalla son mutuamente exclusivas) [4] | Sí (Permite ver Cámara + Pantalla a la vez) [4] |
+| **Consumo de Ancho de Banda**| Sostenido (1 solo flujo de video) [4] | Duplicado (2 flujos de video simultáneos) [4] |
+| **Riesgo de Glare** | Nulo | Alto (si coincide con otra renegociación) [21] |
+| **Complejidad de Código** | Muy Baja | Media-Alta (Exige gestionar renegociación) |
+
+---
+
 
 ## PARTE II. SÍNTESIS DE RESPUESTAS POR BLOQUE
 
@@ -378,7 +925,7 @@ Para garantizar formalmente que el archivo reensamblado no sufrió corrupción d
 *   **¿Cómo accede un navegador a la cámara y al micrófono? ¿Qué permisos y restricciones de seguridad aplican (contexto seguro, HTTPS, localhost)?**
     *   Accede mediante la API `navigator.mediaDevices.getUserMedia(constraints)` [18]. Aplica la restricción de Contexto Seguro (solo funciona en HTTPS, localhost o file://) y requiere la autorización explícita del usuario mediante la ventana de permisos del navegador [18].
 *   **¿Por qué un contenedor Docker normalmente no accede a la cámara del equipo anfitrión? ¿Qué cambia en una máquina virtual (paso de dispositivos USB, navegador dentro o fuera de la máquina)? ¿Dónde debe ocurrir la captura en su arquitectura?**
-    *   Un contenedor no accede directamente porque está aislado del hardware del host [4]. En una MV requeriría passthrough de dispositivos USB si el navegador estuviera dentro de la MV [4]. En nuestra arquitectura, la captura ocurre en el navegador web del usuario ejecutado en el host físico anfitrión [19].
+    *   Un contenedor no accede directamente porque está aislado del hardware del host [4]. En una MV requeriría passthrough de dispositivos USB si el navegador estuviera dentro de la MV [4]. En nuestra arquitectura, la captura ocurre en el navegador web del usuario ejecutado en el host físico anfitrión [10].
 *   **¿Qué es un códec? ¿Qué códecs de audio y video negocian los navegadores en WebRTC? Comparen al menos tres en compresión, consumo de CPU, compatibilidad y licencias.**
     *   Un códec es el algoritmo de compresión/descompresión de medios en tiempo real [4]. VP8 (video mandatorio RFC 7742) es balanceado y libre de royalties [12]; H.264 (video mandatorio) posee aceleración por hardware en dispositivos pero tiene patentes [12]; Opus (audio mandatorio RFC 7874) es de calidad y tasa de bits adaptable ultra eficiente y abierto [12].
 *   **¿Qué ancho de banda aproximado requiere una videollamada a 480p y a 720p?**
@@ -396,6 +943,42 @@ Para garantizar formalmente que el archivo reensamblado no sufrió corrupción d
 *   **¿Cómo verifica el receptor que el archivo llegó completo e íntegro?**
     *   El receptor calcula la cantidad total de bytes recibidos frente al tamaño esperado y ejecuta un hash criptográfico (SHA-256) sobre el `Blob` reensamblado, comparándolo con el hash checksum enviado por el emisor en los metadatos iniciales [4].
 
+### Bloque F. Interfaz y servidor
+
+*   **¿Qué lenguaje y framework usarán para el servidor (Node.js, Python u otro)? Justifiquen.**
+    *   Se utilizará Node.js con Express y la biblioteca `ws`. Se justifica por el rendimiento asíncrono no bloqueante del motor V8, su baja latencia para I/O intensivo en señalización y la homogeneidad de lenguaje (JavaScript) entre cliente y servidor [4].
+*   **¿La interfaz será HTML y JavaScript puro o usará un framework? Justifiquen.**
+    *   Se empleará HTML5 y JavaScript puro (vanilla). Se justifica para evitar el overhead computacional de frameworks SPA, simplificar el bundle sin necesidad de transpiladores (Webpack/Vite) y permitir el control directo de las APIs DOM nativas de WebRTC [4].
+*   **Bosquejen la interfaz: zona de video, chat, botón de llamada y envío de archivos.**
+    *   La UI dispondrá de un grid principal de video (`<video>` local y remoto con botones Mute/Cam/Call/Hangup), una barra lateral de chat con historial y estado de conexión, y un panel inferior de transferencia de archivos con selector, barra de progreso `<progress>` e indicadores SHA-256 [4].
+
+### Bloque G. Arquitectura propuesta
+
+*   **Diagrama UML de componentes: el servidor de señalización, la interfaz web y los módulos del cliente (captura de medios, conexión entre pares, chat, transferencia de archivos), con sus interfaces y dependencias.**
+    *   Modela la separación en capas: Servidor (`SignalingServer`, `RoomManager`), Cliente Web (`MediaManager`, `PeerConnectionManager`, `SignalingClient`, `DataChannelManager`, `FileTransferManager`), detallando sus interfaces JavaScript y dependencias de WebSockets/WebRTC APIs [4].
+*   **Diagrama UML de despliegue: los dos nodos (contenedores o máquinas virtuales), su red, los navegadores y el equipo anfitrión, indicando protocolo y puerto de cada conexión.**
+    *   Representa dos contenedores Docker (`nodo_alfa` y `nodo_beta`) en una red bridge (`webrtc_net`), exponiendo puertos en el anfitrión (`3001:3000` y `3002:3000`), donde los navegadores web del host se conectan y establecen canales P2P por UDP [4].
+*   **Diagramas UML de funcionamiento: un diagrama de secuencia del inicio de una videollamada (señalización, oferta, respuesta y candidatos ICE) y otro del envío de un archivo por fragmentos. Se puede agregar un diagrama de estados de la conexión.**
+    *   Secuencia 1 muestra el flujo Offer/Answer/Trickle ICE entre pares vía WebSocket [8]; Secuencia 2 ilustra el chunking de 16 KB con control de flujo `bufferedAmount` [13]; Estados detalla las transiciones `signalingState` e `iceConnectionState` [8].
+*   **Tabla de tecnologías elegidas, con la alternativa descartada y el motivo.**
+    *   Matriz comparativa: Node.js (frente a Python por afinidad JS), Vanilla JS (frente a React por simplicidad), WebSocket (frente a SSE por bidireccionalidad), Docker (frente a MVs por ligereza) y RTCDataChannel (frente a HTTP por transferencia P2P directa) [4].
+*   **Riesgos identificados y cómo los mitigarán.**
+    *   Riesgo de bloqueo por Secure Contexts (mitigado con HTTPS/localhost), desbordamiento de búfer en transferencia de archivos (mitigado con `bufferedAmountLowThreshold`) y colisión de puertos en Docker (mitigado con mapeo único de puertos) [4].
+
+### Bloque H. Preguntas a investigar para el RETO
+
+*   **¿Qué diferencias hay entre malla, SFU y MCU en ancho de banda, CPU, latencia y complejidad? ¿Cuántas conexiones y cuántos flujos de subida necesita cada una con 4 participantes?**
+    *   Malla requiere 6 conexiones P2P totales (cada par se conecta directamente) y 3 flujos de subida por cliente ($O(N-1)$ subida, $O(N^2)$ global); SFU requiere 4 conexiones cliente-SFU (una por participante hacia el servidor de medios), 1 flujo de subida por cliente y 3 flujos de bajada reenviados por el SFU ($O(1)$ subida); MCU requiere 4 conexiones cliente-MCU, 1 flujo de subida y 1 flujo mixto de bajada por cliente ($O(1)$ en ambas direcciones) [19], [20]. Malla no requiere servidor de medios pero satura la CPU/ancho de banda del cliente; SFU escala eficientemente con bajo consumo de CPU en el servidor; MCU exige alto cómputo en servidor por la transcodificación [19].
+*   **Si eligen SFU, ¿qué servidor usarán y cómo se integra con su señalización y con su plataforma (Docker o máquinas virtuales)?**
+    *   Se evaluaría `mediasoup` o `Janus`, integrado como un servicio en un contenedor Docker dedicado dentro de la red `webrtc_net`, comunicándose con la señalización vía IPC/sockets y exponiendo un rango de puertos UDP para flujos RTP [19], [20].
+*   **¿Cómo diseñarán las salas y los mensajes dirigidos en el servidor de señalización?**
+    *   Se diseñará una estructura de mapa en memoria (`roomsMap`) en el servidor. Los mensajes contendrán `"sender"` y `"target"`, permitiendo que las ofertas, respuestas y candidatos ICE se enruten puntualmente entre cada par de participantes en la malla [4].
+*   **¿Qué es la renegociación de una sesión WebRTC y qué problemas aparecen cuando dos participantes renegocian a la vez ("glare")? ¿Cómo los resuelve el patrón "perfect negotiation"?**
+    *   La renegociación actualiza los parámetros SDP al añadir/quitar pistas [8]. El Glare es la colisión por ofertas simultáneas [21]. Perfect Negotiation lo resuelve asignando roles (Polite/Impolite); el par Polite ejecuta rollback de su oferta al detectar colisión y acepta la remota, mientras el Impolite ignora la oferta entrante colisionada [8].
+*   **¿Cómo funciona `getDisplayMedia()`, qué restricciones tiene y en qué se diferencia de `getUserMedia()`?**
+    *   `getDisplayMedia()` captura superficies de pantalla del SO [22]. Requiere interacción explícita del usuario (gesto de click) y contexto seguro HTTPS/localhost [22]. Se diferencia de `getUserMedia()` en que captura software/pantalla en lugar de hardware físico (cámara/micrófono) [22].
+*   **¿Cuándo conviene `replaceTrack()` y cuándo `addTrack()` para compartir pantalla?**
+    *   Conviene `replaceTrack()` cuando se desea conmutar la cámara por la pantalla sin renegociar el SDP ni alterar el ancho de banda [8]. Conviene `addTrack()` cuando se requiere transmitir cámara y pantalla simultáneamente (PIP), asumiendo el costo de renegociar la sesión SDP y duplicar el ancho de banda [4].
 
 ---
 ---
@@ -420,4 +1003,7 @@ Para garantizar formalmente que el archivo reensamblado no sufrió corrupción d
 [16] PubNub, «Comparing WebSocket Alternatives for Realtime Comms», PubNub Guides, 2025.
 [17] Ably, «WebSocket alternatives: Comparing realtime protocols», 2025.
 [18] MDN Web Docs, «MediaDevices: getUserMedia() method - Web APIs», Mozilla Developer Network, 2025.
-[19] IETF RTCWEB Group, «WebRTC Tutorial: Real-Time Communication for the Web», IETF Proceedings, 2017.
+[19] Cloudflare, «SFU vs. MCU vs. Peer-to-Peer for Real-Time Video», Cloudflare Perspectives, 2026.
+[20] MiroTalk, «Choose an architecture - WebRTC Architectures (Mesh, SFU, MCU)», MiroTalk Documentation, 2026.
+[21] W3C WebRTC Working Group, «WebRTC 1.0: Real-Time Communication Between Browsers - Section 10.7 Perfect Negotiation Example», World Wide Web Consortium, 2026.
+[22] W3C WebRTC Working Group, «Screen Capture API - W3C Recommendation», World Wide Web Consortium, 2026. 
