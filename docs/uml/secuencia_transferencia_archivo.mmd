@@ -1,0 +1,34 @@
+sequenceDiagram
+autonumber
+participant E as Emisor
+participant DC as RTCDataChannel
+participant R as Receptor
+
+Note over E,R: Fase 1: Metadatos e integridad
+E->>E: Calcular SHA-256 del archivo
+E->>DC: JSON {type: "file-meta", name, size, hash}
+DC->>R: Metadatos recibidos
+R->>R: Preparar buffer de recepción
+
+Note over E,R: Fase 2: Envío de chunks con control de flujo
+loop Mientras queden chunks
+    E->>E: file.slice(offset, offset + 16384)
+    E->>DC: send(chunkBuffer) [16 KB]
+    DC->>R: onmessage(ArrayBuffer)
+    R->>R: Acumular chunk en array
+    alt bufferedAmount > bufferedAmountLowThreshold
+        E->>E: Pausar envío
+        Note over E: Esperar evento onbufferedamountlow
+        DC-->>E: bufferedamountlow
+        E->>E: Reanudar envío
+    end
+end
+
+Note over E,R: Fase 3: Reensamblaje y verificación
+R->>R: Concatenar chunks en Blob
+R->>R: Calcular SHA-256 del Blob
+alt Hash coincide
+    R->>R: Archivo íntegro → habilitar descarga
+else Hash no coincide
+    R->>R: Error de integridad → solicitar reenvío
+end

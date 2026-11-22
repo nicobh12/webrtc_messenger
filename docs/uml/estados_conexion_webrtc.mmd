@@ -1,0 +1,25 @@
+stateDiagram-v2
+[*] --> new: RTCPeerConnection creada
+new --> connecting: setLocalDescription + setRemoteDescription
+connecting --> connected: ICE completa (candidatos válidos)
+connecting --> failed: ICE falla (sin ruta)
+connected --> disconnected: Pérdida temporal de red
+disconnected --> connected: Reconexión ICE exitosa
+disconnected --> failed: Timeout de reconexión
+connected --> closed: close() invocado
+failed --> closed: close() invocado
+disconnected --> closed: close() invocado
+closed --> [*]
+
+note right of new
+    signalingState: stable
+    connectionState: new
+end note
+note right of connecting
+    signalingState: have-local-offer
+    o have-remote-offer
+end note
+note right of connected
+    signalingState: stable
+    Flujos SRTP/SCTP activos
+end note

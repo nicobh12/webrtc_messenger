@@ -1,0 +1,55 @@
+classDiagram
+direction TB
+
+namespace ServidorSenalizacion {
+    class SignalingServer {
+        +start(port)
+        +onConnection(ws)
+    }
+    class WebSocketHandler {
+        +handshake(req)
+        +broadcast(msg)
+    }
+    class RoomManager {
+        -Map~roomId, Set~clients~~ rooms
+        +joinRoom(client, roomId)
+        +leaveRoom(client)
+        +routeMessage(sender, target, msg)
+    }
+}
+
+namespace ClienteWeb {
+    class MediaManager {
+        +getUserMedia()
+        +getDisplayMedia()
+    }
+    class SignalingClient {
+        +connect(url)
+        +send(msg)
+        +onMessage(callback)
+    }
+    class PeerConnectionManager {
+        +RTCPeerConnection pc
+        +createOffer()
+        +createAnswer()
+        +addIceCandidate(candidate)
+    }
+    class DataChannelManager {
+        +RTCDataChannel channel
+        +sendChat(msg)
+        +onMessage(callback)
+    }
+    class FileTransferManager {
+        +sendFile(file)
+        +onChunk(chunk)
+        +verifyHash(hash)
+    }
+}
+
+SignalingServer --> WebSocketHandler : usa
+WebSocketHandler --> RoomManager : delega
+SignalingClient --> PeerConnectionManager : señalización
+PeerConnectionManager --> DataChannelManager : crea canal
+DataChannelManager --> FileTransferManager : transfiere
+MediaManager --> PeerConnectionManager : addTrack()
+

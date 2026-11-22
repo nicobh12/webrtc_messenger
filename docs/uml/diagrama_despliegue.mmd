@@ -1,0 +1,27 @@
+flowchart TB
+subgraph HOST["Equipo Anfitrión (Host OS)"]
+    direction TB
+
+    subgraph BROWSERS["Navegadores Web"]
+        CA["Cliente A\nhttp://localhost:3001"]
+        CB["Cliente B\nhttp://localhost:3002"]
+    end
+
+    subgraph DOCKER["Docker Engine + Docker Compose"]
+        direction LR
+        subgraph NET["Red bridge: webrtc_net"]
+            direction TB
+            NA["nodo_alfa\nContenedor\nIP: 172.20.0.2\nPuerto interno: 3000\nEXPOSE 3000"]
+            NB["nodo_beta\nContenedor\nIP: 172.20.0.3\nPuerto interno: 3000\nEXPOSE 3000"]
+            NA <-->|"ws://nodo_beta:3000/peer-signaling\n(Señalización inter-nodo)"| NB
+        end
+
+        NA -.->|"PUBLISH 3001:3000"| PORT_A["Puerto host: 3001"]
+        NB -.->|"PUBLISH 3002:3000"| PORT_B["Puerto host: 3002"]
+    end
+
+    CA -->|"HTTP / WebSocket\nws://localhost:3001/signaling"| PORT_A
+    CB -->|"HTTP / WebSocket\nws://localhost:3002/signaling"| PORT_B
+
+    CA <-.->|"WebRTC P2P\nSRTP / SCTP sobre UDP\n(puertos dinámicos ICE)"| CB
+end

@@ -1,0 +1,35 @@
+sequenceDiagram
+autonumber
+participant A as Cliente A
+participant SA as Servidor Señalización A
+participant SB as Servidor Señalización B
+participant B as Cliente B
+
+Note over A,B: Fase 1: Captura y Oferta SDP
+A->>A: getUserMedia() + addTrack()
+A->>A: createOffer() + setLocalDescription()
+A->>SA: JSON {type: "offer", sdp: ...}
+SA->>SB: Reenvío inter-nodo (Fase 3)
+SB->>B: JSON {type: "offer", sdp: ...}
+B->>B: setRemoteDescription(offer)
+B->>B: createAnswer() + setLocalDescription()
+
+Note over A,B: Fase 2: Respuesta SDP
+B->>SB: JSON {type: "answer", sdp: ...}
+SB->>SA: Reenvío inter-nodo (Fase 3)
+SA->>A: JSON {type: "answer", sdp: ...}
+A->>A: setRemoteDescription(answer)
+
+Note over A,B: Fase 3: Trickle ICE (paralelo)
+A->>SA: JSON {type: "candidate", candidate: ...}
+SA->>SB: Reenvío
+SB->>B: JSON {type: "candidate", candidate: ...}
+B->>B: addIceCandidate(candidate)
+B->>SB: JSON {type: "candidate", candidate: ...}
+SB->>SA: Reenvío
+SA->>A: JSON {type: "candidate", candidate: ...}
+A->>A: addIceCandidate(candidate)
+
+Note over A,B: Fase 4: Conexión P2P establecida
+A-->>B: Flujo SRTP (audio/video) directo
+B-->>A: Flujo SRTP (audio/video) directo
