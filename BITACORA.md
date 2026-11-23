@@ -66,3 +66,36 @@
   * **NotebookLM:** apoyo en la investigación, consulta de fuentes y organización de los fundamentos teóricos de los Bloques A a H.
   * **Agente Vibe:** apoyo en la síntesis y edición del borrador Markdown.
   * **Figma AI:** asistencia en la generación inicial del prototipo de interfaz.
+
+---
+
+### Entrada 4: 22 de noviembre de 2026
+
+* **Tiempo estimado:** 4.0 horas
+
+* **Actividades realizadas:**
+  * **Configuración del entorno:**
+    * Instalación y configuración de WSL2 como entorno para ejecutar Docker Desktop, habilitando su integración con Ubuntu.
+    * Instalación de Docker Desktop y verificación de su funcionamiento mediante `docker run hello-world`.
+    * Configuración de Node.js en Ubuntu (WSL) mediante NVM, instalando la versión 24.22.3.
+    * Configuración de Git con autenticación SSH para trabajar con GitHub.
+    * Creación del archivo `.gitattributes` para normalizar los finales de línea (LF/CRLF) entre Windows y Linux.
+
+  * **Desarrollo de la Fase 2 (Infraestructura inicial):**
+    * Revisión del informe de investigación para aplicar la arquitectura definida: dos nodos independientes (`nodo-a` y `nodo-b`) comunicados mediante WebSockets.
+    * Creación de `package.json` e instalación de la dependencia `ws`.
+    * Implementación de `server.js` con un servidor WebSocket en el puerto 3000, encargado de recibir mensajes y mostrarlos en los logs.
+    * Configuración del `Dockerfile` utilizando `node:18-alpine`.
+    * Elaboración de `docker-compose.yml` con los servicios `nodo-a` y `nodo-b`, utilizando la red predeterminada de Docker Compose y sus respectivos mapeos de puertos (`3000:3000` y `3001:3000`).
+    * Configuración de variables de entorno para identificar cada nodo en los registros.
+    * Creación del `README.md` con instrucciones para ejecutar y probar los servicios.
+    * Construcción y ejecución de ambos contenedores mediante `docker compose up --build`, verificando que los dos servidores WebSocket iniciaran correctamente.
+
+* **Problemas y soluciones:**
+  * **Finales de línea (LF/CRLF):** Se solucionó mediante la creación de `.gitattributes`, estableciendo LF como formato normalizado.
+  * **Autenticación de Git:** Se reemplazó la conexión HTTPS por SSH y se configuraron las claves correspondientes desde WSL.
+  * **Ejecución de Node.js en WSL:** Se utilizó NVM para instalar y gestionar Node.js directamente desde Ubuntu.
+  * **Pruebas de WebSocket:** Al intentar utilizar `wscat`, se identificó que no estaba instalado en el entorno. Se dejó pendiente su instalación para realizar las pruebas de conexión y recepción de mensajes.
+
+* **Uso de herramientas de IA:**
+  * **OpenCode:** Apoyo en la revisión de la arquitectura y en la implementación de los archivos iniciales de la Fase 2, incluyendo el servidor WebSocket y la configuración de Docker.

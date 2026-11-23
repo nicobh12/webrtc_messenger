@@ -1,0 +1,16 @@
+{
+  "name": "webrtc-messenger-signaling",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Servidor de señalización WebSocket mínimo para la Fase 2 del laboratorio de Sistemas Distribuidos (UTP)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

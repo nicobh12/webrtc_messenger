@@ -1,0 +1,28 @@
+services:
+  nodo-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nodo-a
+    environment:
+      NODE_NAME: nodo-a
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  nodo-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nodo-b
+    environment:
+      NODE_NAME: nodo-b
+      PORT: "3000"
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+
+# No se declara la sección "networks": Docker Compose crea la red bridge por
+# defecto del proyecto y ambos servicios se resuelven por su nombre (nodo-a,
+# nodo-b) mediante el DNS interno de Docker.
