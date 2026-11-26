@@ -7,8 +7,9 @@ COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
 COPY server.js ./
+COPY public ./public
 
-# Puerto interno del servidor de señalización (documental; se publica con Compose).
+# Puerto interno del servidor HTTP/WebSocket (documental; se publica con Compose).
 EXPOSE 3000
 
 CMD ["node", "server.js"]

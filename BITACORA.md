@@ -99,3 +99,26 @@
 
 * **Uso de herramientas de IA:**
   * **OpenCode:** Apoyo en la revisión de la arquitectura y en la implementación de los archivos iniciales de la Fase 2, incluyendo el servidor WebSocket y la configuración de Docker.
+
+  ### Entrada 5: 25 de noviembre de 2026
+
+* **Tiempo estimado:** 4.5 horas
+
+* **Actividades realizadas:**
+  * **Desarrollo de la interfaz de usuario (UI/UX):**
+    * Implementación de la estructura HTML básica en `index.html`, basada en el prototipo de Figma.
+    * Creación de `styles.css` para definir el estilo visual de la aplicación, cercano al prototipo generado en Figma.
+    * Ajustes en la paleta de colores, tipografía, componentes y distribución general de la interfaz.
+    * Comunicación entre clientes de un mismo nodo mediante WebSocket, permitiendo el envío y recepción de mensajes de chat.
+
+  * **Pruebas de comunicación:**
+    * Verificación de la conexión WebSocket entre clientes del mismo nodo, asegurando que los mensajes se transmiten correctamente.
+    * Comprobación del envío, recepción y difusión de mensajes en formato JSON.
+    * Revisión de los registros del servidor mediante Docker Compose para comprobar el funcionamiento de las conexiones y el intercambio de mensajes.
+    
+  * **Problemas y soluciones:**
+    * Se modificó 'docker-compose.yml' para cargar correctamente los archivos estáticos de la interfaz de usuario, asegurando que `index.html` y `styles.css` se sirven desde el contenedor y por lo tanto se actualizan correctamente al realizar cambios en el código fuente.
+    * Adaptación de la configuración del servidor para integrar Express y WebSocket en un mismo puerto, permitiendo servir los archivos estáticos de la interfaz y gestionar las conexiones en tiempo real desde el mismo nodo.
+
+  * **Uso de herramientas de IA:**
+    * **OpenCode:** Asistencia en la implementación de la interfaz de usuario y corrección de estilos CSS para obtener un diseño más fiel al prototipo de Figma.
