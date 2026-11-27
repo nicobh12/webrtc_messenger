@@ -125,12 +125,36 @@ body {
 }
 
 .user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   padding: 0.45rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--panel);
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.user-chip__edit {
+  display: inline-grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--mauve);
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.user-chip__edit:hover {
+  background: var(--panel-soft);
+  color: var(--accent);
 }
 
 .user-chip strong {
@@ -180,6 +204,26 @@ body {
 .status[data-state="offline"] .status__dot {
   background: var(--danger);
   box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
+}
+
+.status[data-state="local"] {
+  color: var(--muted);
+}
+
+.status[data-state="local"] .status__dot {
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(113, 106, 115, 0.14);
+}
+
+.status[data-state="connected"] {
+  color: var(--success);
+  border-color: rgba(40, 118, 77, 0.3);
+  background: rgba(40, 118, 77, 0.08);
+}
+
+.status[data-state="connected"] .status__dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(40, 118, 77, 0.16);
 }
 
 /* ------------------------------------------------------------- Workspace */
@@ -416,6 +460,76 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.peer-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-soft);
+  overflow-x: auto;
+}
+
+.peer-strip__label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.peer-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.peer-list__empty {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.peer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.peer-chip:hover {
+  border-color: var(--mauve);
+}
+
+.peer-chip[aria-pressed="true"] {
+  border-color: var(--plum);
+  background: var(--plum);
+  color: #fff;
+}
+
+.peer-chip__node {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 500;
+}
+
+.peer-chip[aria-pressed="true"] .peer-chip__node {
+  color: rgba(255, 255, 255, 0.75);
+}
+
 .chat-messages {
   flex: 1;
   display: flex;
@@ -471,6 +585,25 @@ body {
   font-weight: 700;
 }
 
+.message__via {
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.message__status {
+  padding: 0 0.15rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.message__status--ok {
+  color: var(--success);
+}
+
+.message__status--error {
+  color: var(--danger);
+}
+
 .message__text {
   margin: 0;
   padding: 0.6rem 0.8rem;
@@ -504,10 +637,36 @@ body {
 
 .chat-form {
   display: flex;
+  flex-direction: column;
   gap: 0.55rem;
   padding: 0.85rem 1rem 0.35rem;
   border-top: 1px solid var(--border);
   background: var(--panel);
+}
+
+.chat-form__target {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.chat-form__target-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.chat-form__row {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.chat-form__input--target {
+  flex: 1;
+  font-size: 0.8rem;
 }
 
 .chat-form__input {

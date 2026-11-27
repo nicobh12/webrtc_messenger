@@ -4,6 +4,10 @@ const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}`;
 const RECONNECT_DELAY_MS = 2000;
 const MAX_MESSAGE_LENGTH = 2000;
+const MAX_USER_ID_LENGTH = 64;
+const USER_ID_PATTERN = new RegExp(`^[A-Za-z0-9._-]{1,${MAX_USER_ID_LENGTH}}$`);
+const USER_STORAGE_KEY = 'webrtc-messenger.userId';
+const TARGET_STORAGE_KEY = 'webrtc-messenger.target';
 
 const STATUS_LABELS = {
   connecting: 'Conectando…',
@@ -11,13 +15,29 @@ const STATUS_LABELS = {
   offline: 'Desconectado',
 };
 
+const REASON_LABELS = {
+  'missing-target': 'falta el destinatario',
+  'empty-text': 'mensaje vacío',
+  offline: 'destinatario desconectado',
+  'peer-unreachable': 'nodo inalcanzable',
+  timeout: 'sin confirmación del nodo',
+  'remote-error': 'error en el nodo remoto',
+};
+
 const elements = {
   userId: document.getElementById('user-id'),
+  nodeName: document.getElementById('node-name'),
+  changeUser: document.getElementById('change-user'),
   status: document.getElementById('connection-status'),
   statusLabel: document.getElementById('connection-label'),
+  peerStatus: document.getElementById('peer-status'),
+  peerLabel: document.getElementById('peer-label'),
   messages: document.getElementById('chat-messages'),
   emptyState: document.getElementById('chat-empty'),
+  peerList: document.getElementById('peer-list'),
+  userOptions: document.getElementById('user-options'),
   form: document.getElementById('chat-form'),
+  targetInput: document.getElementById('chat-target'),
   input: document.getElementById('chat-input'),
   sendButton: document.getElementById('chat-send'),
 };
@@ -27,21 +47,68 @@ const timeFormatter = new Intl.DateTimeFormat('es', {
   minute: '2-digit',
 });
 
-const senderId = createSenderId();
+const senderId = resolveUserId();
 
 let socket = null;
 let reconnectTimer = null;
 let hasConnected = false;
 let offlineNotified = false;
 let isUnloading = false;
+let registered = false;
+let directory = [];
+/** messageId -> { element, statusEl } de los mensajes propios pendientes de ack. */
+const pendingMessages = new Map();
 
-function createSenderId() {
-  if (window.crypto?.randomUUID) {
-    return `cliente-${window.crypto.randomUUID().slice(0, 8)}`;
+// ------------------------------------------------------------- Utilidades
+
+function randomToken() {
+  if (window.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(4);
+    window.crypto.getRandomValues(bytes);
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 
-  return `cliente-${Math.random().toString(36).slice(2, 10)}`;
+  return Math.random().toString(36).slice(2, 10);
 }
+
+function normalizeUserId(value) {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  return USER_ID_PATTERN.test(id) ? id : null;
+}
+
+function resolveUserId() {
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = normalizeUserId(params.get('user'));
+
+  if (fromQuery) {
+    localStorage.setItem(USER_STORAGE_KEY, fromQuery);
+    return fromQuery;
+  }
+
+  const stored = normalizeUserId(localStorage.getItem(USER_STORAGE_KEY));
+  if (stored) return stored;
+
+  const generated = `cliente-${randomToken()}`;
+  localStorage.setItem(USER_STORAGE_KEY, generated);
+  return generated;
+}
+
+function resolveInitialTarget() {
+  const params = new URLSearchParams(window.location.search);
+  return (
+    normalizeUserId(params.get('target')) ||
+    normalizeUserId(localStorage.getItem(TARGET_STORAGE_KEY)) ||
+    ''
+  );
+}
+
+function createMessageId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `m-${Date.now()}-${randomToken()}`;
+}
+
+// ---------------------------------------------------------------- Interfaz
 
 function setConnectionState(state) {
   elements.status.dataset.state = state;
@@ -49,6 +116,7 @@ function setConnectionState(state) {
 
   const isOnline = state === 'online';
   elements.input.disabled = !isOnline;
+  elements.targetInput.disabled = !isOnline;
   elements.sendButton.disabled = !isOnline;
 }
 
@@ -77,11 +145,12 @@ function addSystemMessage(text) {
   scrollToBottom();
 }
 
-function appendChatMessage({ sender, text, own }) {
+function appendChatMessage({ sender, text, own, fromNode, status, messageId }) {
   removeEmptyState();
 
   const message = document.createElement('article');
   message.className = `message ${own ? 'message--own' : 'message--remote'}`;
+  if (messageId) message.dataset.messageId = messageId;
 
   const meta = document.createElement('div');
   meta.className = 'message__meta';
@@ -90,26 +159,184 @@ function appendChatMessage({ sender, text, own }) {
   author.className = 'message__author';
   author.textContent = own ? 'Tú' : sender;
 
+  meta.append(author);
+
+  if (fromNode) {
+    const via = document.createElement('span');
+    via.className = 'message__via';
+    via.textContent = `· ${fromNode}`;
+    meta.append(via);
+  }
+
   const time = document.createElement('time');
   const now = new Date();
   time.dateTime = now.toISOString();
   time.textContent = timeFormatter.format(now);
 
-  meta.append(author, time);
+  meta.append(time);
 
   const bubble = document.createElement('p');
   bubble.className = 'message__text';
   bubble.textContent = text;
 
   message.append(meta, bubble);
+
+  let statusEl = null;
+
+  if (own) {
+    statusEl = document.createElement('span');
+    statusEl.className = 'message__status';
+    statusEl.textContent = status || 'enviando…';
+    message.append(statusEl);
+  }
+
   elements.messages.append(message);
   scrollToBottom();
+
+  return { element: message, statusEl };
+}
+
+function updateMessageStatus(entry, text, tone) {
+  if (!entry?.statusEl) return;
+
+  entry.statusEl.textContent = text;
+  entry.statusEl.classList.toggle('message__status--ok', tone === 'ok');
+  entry.statusEl.classList.toggle('message__status--error', tone === 'error');
+}
+
+function setTarget(userId) {
+  elements.targetInput.value = userId;
+  localStorage.setItem(TARGET_STORAGE_KEY, userId);
+  elements.targetInput.dispatchEvent(new Event('input'));
+  elements.input.focus();
+}
+
+function renderDirectory() {
+  const others = directory.filter((user) => user.userId !== senderId);
+  const currentTarget = elements.targetInput.value.trim();
+
+  elements.peerList.replaceChildren();
+  elements.userOptions.replaceChildren();
+
+  if (others.length === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'peer-list__empty';
+    empty.textContent = 'No hay otros usuarios conectados.';
+    elements.peerList.append(empty);
+  }
+
+  for (const user of others) {
+    const option = document.createElement('option');
+    option.value = user.userId;
+    option.label = `${user.userId} (${user.node})`;
+    elements.userOptions.append(option);
+
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'peer-chip';
+    chip.dataset.userId = user.userId;
+    chip.setAttribute('aria-pressed', String(user.userId === currentTarget));
+    chip.title = `Enviar a ${user.userId} (nodo ${user.node})`;
+
+    const name = document.createElement('span');
+    name.textContent = user.userId;
+
+    const node = document.createElement('span');
+    node.className = 'peer-chip__node';
+    node.textContent = user.node;
+
+    chip.append(name, node);
+    chip.addEventListener('click', () => setTarget(user.userId));
+
+    elements.peerList.append(chip);
+  }
+}
+
+function renderPeerStatus(peers) {
+  const connected = Array.isArray(peers) ? peers : [];
+
+  elements.peerStatus.dataset.state = connected.length > 0 ? 'connected' : 'local';
+  elements.peerLabel.textContent =
+    connected.length > 0 ? `Enlaces: ${connected.join(', ')}` : 'Sin enlaces';
+}
+
+// ------------------------------------------------------- Mensajes del servidor
+
+function onWelcome(message) {
+  registered = true;
+  elements.nodeName.textContent = message.node || '…';
+  setConnectionState('online');
+  onPresence(message);
+
+  addSystemMessage(
+    hasConnected
+      ? `Sesión restablecida como ${message.userId} en ${message.node}.`
+      : `Conectado como ${message.userId} en ${message.node}.`
+  );
+
+  hasConnected = true;
+  offlineNotified = false;
+  elements.input.focus();
+}
+
+function onPresence(message) {
+  directory = Array.isArray(message.users) ? message.users : [];
+  renderDirectory();
+  renderPeerStatus(message.peers);
+}
+
+function onChat(message) {
+  const text = typeof message.text === 'string' ? message.text.trim() : '';
+  if (!text) return;
+
+  const sender =
+    typeof message.sender === 'string' && message.sender.trim()
+      ? message.sender.trim()
+      : 'anónimo';
+
+  // Eco del propio mensaje (mismo usuario en otra pestaña): no duplicar.
+  if (message.messageId && pendingMessages.has(message.messageId)) return;
+
+  const currentNode = elements.nodeName.textContent;
+  const fromNode =
+    typeof message.fromNode === 'string' && message.fromNode !== currentNode
+      ? message.fromNode
+      : null;
+
+  appendChatMessage({
+    sender,
+    text: text.slice(0, MAX_MESSAGE_LENGTH),
+    own: false,
+    fromNode,
+  });
+}
+
+function onChatAck(message) {
+  const entry = pendingMessages.get(message.messageId);
+  if (!entry) return;
+
+  pendingMessages.delete(message.messageId);
+  updateMessageStatus(entry, `entregado · ${message.targetNode}`, 'ok');
+}
+
+function onChatError(message) {
+  const reason = REASON_LABELS[message.reason] || message.reason || 'error';
+  const entry = pendingMessages.get(message.messageId);
+
+  if (entry) {
+    pendingMessages.delete(message.messageId);
+    updateMessageStatus(entry, `no entregado · ${reason}`, 'error');
+  }
+
+  addSystemMessage(
+    message.detail
+      ? `No se pudo entregar: ${message.detail}`
+      : `No se pudo entregar a ${message.target ?? 'el destinatario'} (${reason}).`
+  );
 }
 
 function handleIncomingMessage(raw) {
-  if (typeof raw !== 'string') {
-    return;
-  }
+  if (typeof raw !== 'string') return;
 
   let message;
   try {
@@ -118,32 +345,33 @@ function handleIncomingMessage(raw) {
     return;
   }
 
-  if (!message || message.type !== 'chat') {
-    return;
+  if (!message || typeof message !== 'object') return;
+
+  switch (message.type) {
+    case 'welcome':
+      onWelcome(message);
+      break;
+    case 'presence':
+      onPresence(message);
+      break;
+    case 'chat':
+      onChat(message);
+      break;
+    case 'chat-ack':
+      onChatAck(message);
+      break;
+    case 'chat-error':
+      onChatError(message);
+      break;
+    case 'error':
+      addSystemMessage(`Error del servidor: ${message.detail || message.code}`);
+      break;
+    default:
+      break;
   }
-
-  const text = typeof message.text === 'string' ? message.text.trim() : '';
-  if (!text) {
-    return;
-  }
-
-  const sender =
-    typeof message.sender === 'string' && message.sender.trim()
-      ? message.sender.trim()
-      : 'anónimo';
-
-  // El servidor difunde a los demás clientes; esta comprobación evita
-  // duplicar el mensaje si en el futuro también se enviara al emisor.
-  if (sender === senderId) {
-    return;
-  }
-
-  appendChatMessage({
-    sender,
-    text: text.slice(0, MAX_MESSAGE_LENGTH),
-    own: false,
-  });
 }
+
+// ------------------------------------------------------------- Conexión WS
 
 function connect() {
   window.clearTimeout(reconnectTimer);
@@ -153,13 +381,8 @@ function connect() {
   socket = new WebSocket(WS_URL);
 
   socket.addEventListener('open', () => {
-    setConnectionState('online');
-    addSystemMessage(
-      hasConnected ? 'Conexión restablecida.' : `Conectado como ${senderId}.`
-    );
-    hasConnected = true;
-    offlineNotified = false;
-    elements.input.focus();
+    registered = false;
+    socket.send(JSON.stringify({ type: 'register', userId: senderId }));
   });
 
   socket.addEventListener('message', (event) => {
@@ -167,11 +390,15 @@ function connect() {
   });
 
   socket.addEventListener('close', () => {
-    if (isUnloading) {
-      return;
-    }
+    registered = false;
+
+    if (isUnloading) return;
 
     setConnectionState('offline');
+
+    directory = [];
+    renderDirectory();
+    renderPeerStatus([]);
 
     if (!offlineNotified) {
       addSystemMessage('Sin conexión con el servidor. Reintentando…');
@@ -188,32 +415,87 @@ function connect() {
   });
 }
 
+// ----------------------------------------------------------------- Eventos
+
 elements.userId.textContent = senderId;
+elements.targetInput.value = resolveInitialTarget();
+
+elements.targetInput.addEventListener('input', () => {
+  const currentTarget = elements.targetInput.value.trim();
+  localStorage.setItem(TARGET_STORAGE_KEY, currentTarget);
+
+  for (const chip of elements.peerList.querySelectorAll('.peer-chip')) {
+    chip.setAttribute('aria-pressed', String(chip.dataset.userId === currentTarget));
+  }
+});
+
+elements.changeUser.addEventListener('click', () => {
+  const next = window.prompt('Nuevo identificador de usuario', senderId);
+  if (next === null) return;
+
+  const normalized = normalizeUserId(next);
+
+  if (!normalized) {
+    window.alert(
+      'Usa solo letras, números, punto, guion o guion bajo (máximo ' +
+        `${MAX_USER_ID_LENGTH} caracteres).`
+    );
+    return;
+  }
+
+  localStorage.setItem(USER_STORAGE_KEY, normalized);
+  window.location.reload();
+});
 
 elements.form.addEventListener('submit', (event) => {
   event.preventDefault();
 
   const text = elements.input.value.trim();
-  if (!text) {
-    return;
-  }
+  const target = normalizeUserId(elements.targetInput.value);
 
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!text) return;
+
+  if (!registered || !socket || socket.readyState !== WebSocket.OPEN) {
     addSystemMessage('Sin conexión con el servidor. Espera a que se restablezca.');
     return;
   }
 
+  if (!target) {
+    addSystemMessage('Indica un destinatario válido (letras, números, ".", "_" o "-").');
+    elements.targetInput.focus();
+    return;
+  }
+
+  if (target === senderId) {
+    addSystemMessage('Escribe el identificador de otro usuario, no el tuyo.');
+    elements.targetInput.focus();
+    return;
+  }
+
   const safeText = text.slice(0, MAX_MESSAGE_LENGTH);
+  const messageId = createMessageId();
 
   socket.send(
     JSON.stringify({
       type: 'chat',
+      messageId,
       sender: senderId,
+      target,
       text: safeText,
     })
   );
 
-  appendChatMessage({ sender: senderId, text: safeText, own: true });
+  const entry = appendChatMessage({
+    sender: senderId,
+    text: safeText,
+    own: true,
+    status: 'enviando…',
+    messageId,
+  });
+
+  pendingMessages.set(messageId, entry);
+  localStorage.setItem(TARGET_STORAGE_KEY, target);
+
   elements.input.value = '';
   elements.input.focus();
 });
@@ -224,4 +506,5 @@ window.addEventListener('beforeunload', () => {
   socket?.close();
 });
 
+renderDirectory();
 connect();

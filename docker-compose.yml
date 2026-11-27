@@ -7,10 +7,18 @@ services:
     environment:
       NODE_NAME: nodo-a
       PORT: "3000"
+      # Nombre DNS del nodo con el que se mantiene el enlace interno.
+      PEER_NODES: nodo-b
     ports:
       - "3000:3000"
     volumes:
       - ./public:/app/public
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
 
   nodo-b:
@@ -21,12 +29,20 @@ services:
     environment:
       NODE_NAME: nodo-b
       PORT: "3000"
+      PEER_NODES: nodo-a
     ports:
       - "3001:3000"
     volumes:
       - ./public:/app/public
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
 
 # No se declara la sección "networks": Docker Compose crea la red bridge por
 # defecto del proyecto y ambos servicios se resuelven por su nombre (nodo-a,
-# nodo-b) mediante el DNS interno de Docker.
+# nodo-b) mediante el DNS interno de Docker. Los enlaces entre servidores usan
+# ws://nodo-a:3000/peer y ws://nodo-b:3000/peer (nunca "localhost").
