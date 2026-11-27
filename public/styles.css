@@ -699,6 +699,48 @@ body {
   cursor: not-allowed;
 }
 
+/* Selector de destinatario (conversación activa) */
+.chat-form__select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+  background: var(--panel-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.chat-form__select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(109, 140, 255, 0.15);
+}
+
+.chat-form__select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.chat-form__select option {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.chat-form__select option[value=""] {
+  color: var(--muted);
+}
+
+.chat-form__select--target {
+  flex: 1;
+  font-size: 0.8rem;
+}
+
 .chat-form__send {
   padding: 0.65rem 1rem;
   border: 0;

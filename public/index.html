@@ -197,17 +197,15 @@
           <form class="chat-form" id="chat-form" autocomplete="off">
             <div class="chat-form__target">
               <label class="chat-form__target-label" for="chat-target">Para</label>
-              <input
-                class="chat-form__input chat-form__input--target"
+              <select
+                class="chat-form__select chat-form__select--target"
                 id="chat-target"
                 name="target"
-                type="text"
-                maxlength="64"
-                list="user-options"
-                placeholder="usuario destino"
+                aria-label="Destinatario"
                 disabled
-              />
-              <datalist id="user-options"></datalist>
+              >
+                <option value="">Selecciona un destinatario</option>
+              </select>
             </div>
 
             <div class="chat-form__row">

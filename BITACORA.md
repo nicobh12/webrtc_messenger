@@ -122,3 +122,21 @@
 
   * **Uso de herramientas de IA:**
     * **OpenCode:** Asistencia en la implementación de la interfaz de usuario y corrección de estilos CSS para obtener un diseño más fiel al prototipo de Figma.
+
+### Entrada 6: 26 de noviembre de 2026
+
+* **Tiempo estimado:** 5.0 horas
+
+* **Actividades realizadas:**
+  * **Comunicación entre nodos:**
+    * Implementación de la comunicación entre clientes conectados a nodos diferentes, permitiendo el intercambio de mensajes entre ambos.
+    * Ajuste de la lógica de señalización para identificar y enrutar los mensajes hacia el cliente destinatario correspondiente.
+    * Implementación de la comunicación dirigida entre dos participantes específicos, evitando la difusión de mensajes a clientes que no forman parte de la conversación.
+
+  * **Ajustes de interfaz:**
+    * Modificación de la interfaz del chat para mostrar únicamente los mensajes correspondientes a la conversación entre los dos participantes.
+    * Ajuste de la visualización de los mensajes enviados y recibidos para diferenciar correctamente a cada participante.
+    * Corrección de la lógica de actualización de la interfaz para reflejar los mensajes intercambiados entre clientes.
+
+* **Uso de herramientas de IA:**
+  * **OpenCode:** Apoyo en la implementación de la comunicación entre nodos, el enrutamiento de mensajes hacia destinatarios específicos y los ajustes de la interfaz del chat.

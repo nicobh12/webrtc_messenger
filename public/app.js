@@ -35,7 +35,6 @@ const elements = {
   messages: document.getElementById('chat-messages'),
   emptyState: document.getElementById('chat-empty'),
   peerList: document.getElementById('peer-list'),
-  userOptions: document.getElementById('user-options'),
   form: document.getElementById('chat-form'),
   targetInput: document.getElementById('chat-target'),
   input: document.getElementById('chat-input'),
@@ -56,8 +55,14 @@ let offlineNotified = false;
 let isUnloading = false;
 let registered = false;
 let directory = [];
-/** messageId -> { element, statusEl } de los mensajes propios pendientes de ack. */
+/** messageId -> { element, statusEl, record } de los mensajes propios pendientes de ack. */
 const pendingMessages = new Map();
+/**
+ * Conversaciones independientes por usuario.
+ * clave: identificador del otro usuario
+ * valor: array de { sender, text, timestamp, direction, fromNode?, messageId?, status?, tone? }
+ */
+const conversations = new Map();
 
 // ------------------------------------------------------------- Utilidades
 
@@ -145,7 +150,7 @@ function addSystemMessage(text) {
   scrollToBottom();
 }
 
-function appendChatMessage({ sender, text, own, fromNode, status, messageId }) {
+function appendChatMessage({ sender, text, own, fromNode, status, messageId, timestamp }) {
   removeEmptyState();
 
   const message = document.createElement('article');
@@ -169,7 +174,7 @@ function appendChatMessage({ sender, text, own, fromNode, status, messageId }) {
   }
 
   const time = document.createElement('time');
-  const now = new Date();
+  const now = typeof timestamp === 'number' ? new Date(timestamp) : new Date();
   time.dateTime = now.toISOString();
   time.textContent = timeFormatter.format(now);
 
@@ -207,16 +212,81 @@ function updateMessageStatus(entry, text, tone) {
 function setTarget(userId) {
   elements.targetInput.value = userId;
   localStorage.setItem(TARGET_STORAGE_KEY, userId);
-  elements.targetInput.dispatchEvent(new Event('input'));
+  elements.targetInput.dispatchEvent(new Event('change'));
   elements.input.focus();
+}
+
+/** Guarda un mensaje en el historial aislado del usuario indicado. */
+function storeMessage(userId, record) {
+  const history = conversations.get(userId) ?? [];
+  history.push(record);
+  conversations.set(userId, history);
+  return record;
+}
+
+/** Muestra solo el estado vacío (sin mensajes o sin destinatario). */
+function showEmptyState() {
+  if (elements.emptyState && !elements.emptyState.isConnected) {
+    elements.messages.append(elements.emptyState);
+  }
+}
+
+/** Limpia el contenedor y renderiza únicamente el historial del destinatario activo. */
+function renderConversation() {
+  const target = elements.targetInput.value.trim();
+  const history = target ? conversations.get(target) : null;
+
+  elements.messages.replaceChildren();
+
+  if (!history || history.length === 0) {
+    showEmptyState();
+    return;
+  }
+
+  for (const record of history) {
+    const entry = appendChatMessage({
+      sender: record.sender,
+      text: record.text,
+      own: record.direction === 'outgoing',
+      fromNode: record.fromNode,
+      status: record.status,
+      messageId: record.messageId,
+      timestamp: record.timestamp,
+    });
+
+    if (record.tone) updateMessageStatus(entry, record.status, record.tone);
+
+    // Reapunta los mensajes propios aún pendientes de ack a los nuevos nodos del DOM.
+    if (record.messageId) {
+      const pending = pendingMessages.get(record.messageId);
+      if (pending) {
+        pending.element = entry.element;
+        pending.statusEl = entry.statusEl;
+      }
+    }
+  }
 }
 
 function renderDirectory() {
   const others = directory.filter((user) => user.userId !== senderId);
-  const currentTarget = elements.targetInput.value.trim();
+  const previousTarget = elements.targetInput.value.trim();
+  const desiredTarget =
+    normalizeUserId(previousTarget) ||
+    normalizeUserId(localStorage.getItem(TARGET_STORAGE_KEY)) ||
+    '';
+
+  // Solo se conserva la selección si el usuario sigue conectado.
+  const activeTarget = others.some((user) => user.userId === desiredTarget)
+    ? desiredTarget
+    : '';
 
   elements.peerList.replaceChildren();
-  elements.userOptions.replaceChildren();
+  elements.targetInput.replaceChildren();
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Selecciona un destinatario';
+  elements.targetInput.append(placeholder);
 
   if (others.length === 0) {
     const empty = document.createElement('span');
@@ -228,14 +298,14 @@ function renderDirectory() {
   for (const user of others) {
     const option = document.createElement('option');
     option.value = user.userId;
-    option.label = `${user.userId} (${user.node})`;
-    elements.userOptions.append(option);
+    option.textContent = `${user.userId} (${user.node})`;
+    elements.targetInput.append(option);
 
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'peer-chip';
     chip.dataset.userId = user.userId;
-    chip.setAttribute('aria-pressed', String(user.userId === currentTarget));
+    chip.setAttribute('aria-pressed', String(user.userId === activeTarget));
     chip.title = `Enviar a ${user.userId} (nodo ${user.node})`;
 
     const name = document.createElement('span');
@@ -249,6 +319,14 @@ function renderDirectory() {
     chip.addEventListener('click', () => setTarget(user.userId));
 
     elements.peerList.append(chip);
+  }
+
+  if (elements.targetInput.value !== activeTarget) {
+    elements.targetInput.value = activeTarget;
+  }
+
+  if (previousTarget !== activeTarget) {
+    renderConversation();
   }
 }
 
@@ -303,12 +381,29 @@ function onChat(message) {
       ? message.fromNode
       : null;
 
-  appendChatMessage({
+  const safeText = text.slice(0, MAX_MESSAGE_LENGTH);
+
+  // Se guarda SIEMPRE en el historial aislado del remitente (aunque no sea el chat activo).
+  const record = storeMessage(sender, {
     sender,
-    text: text.slice(0, MAX_MESSAGE_LENGTH),
-    own: false,
+    text: safeText,
+    timestamp: typeof message.ts === 'number' ? message.ts : Date.now(),
+    direction: 'incoming',
     fromNode,
+    messageId: typeof message.messageId === 'string' ? message.messageId : null,
   });
+
+  // Solo se pinta en el DOM si el remitente coincide con el destinatario seleccionado.
+  if (elements.targetInput.value.trim() === sender) {
+    appendChatMessage({
+      sender,
+      text: record.text,
+      own: false,
+      fromNode,
+      messageId: record.messageId,
+      timestamp: record.timestamp,
+    });
+  }
 }
 
 function onChatAck(message) {
@@ -316,7 +411,13 @@ function onChatAck(message) {
   if (!entry) return;
 
   pendingMessages.delete(message.messageId);
-  updateMessageStatus(entry, `entregado · ${message.targetNode}`, 'ok');
+  const statusText = `entregado · ${message.targetNode}`;
+  updateMessageStatus(entry, statusText, 'ok');
+
+  if (entry.record) {
+    entry.record.status = statusText;
+    entry.record.tone = 'ok';
+  }
 }
 
 function onChatError(message) {
@@ -325,7 +426,13 @@ function onChatError(message) {
 
   if (entry) {
     pendingMessages.delete(message.messageId);
-    updateMessageStatus(entry, `no entregado · ${reason}`, 'error');
+    const statusText = `no entregado · ${reason}`;
+    updateMessageStatus(entry, statusText, 'error');
+
+    if (entry.record) {
+      entry.record.status = statusText;
+      entry.record.tone = 'error';
+    }
   }
 
   addSystemMessage(
@@ -418,15 +525,22 @@ function connect() {
 // ----------------------------------------------------------------- Eventos
 
 elements.userId.textContent = senderId;
-elements.targetInput.value = resolveInitialTarget();
 
-elements.targetInput.addEventListener('input', () => {
+const initialTarget = resolveInitialTarget();
+elements.targetInput.value = initialTarget;
+if (initialTarget) {
+  localStorage.setItem(TARGET_STORAGE_KEY, initialTarget);
+}
+
+elements.targetInput.addEventListener('change', () => {
   const currentTarget = elements.targetInput.value.trim();
   localStorage.setItem(TARGET_STORAGE_KEY, currentTarget);
 
   for (const chip of elements.peerList.querySelectorAll('.peer-chip')) {
     chip.setAttribute('aria-pressed', String(chip.dataset.userId === currentTarget));
   }
+
+  renderConversation();
 });
 
 elements.changeUser.addEventListener('click', () => {
@@ -474,6 +588,7 @@ elements.form.addEventListener('submit', (event) => {
 
   const safeText = text.slice(0, MAX_MESSAGE_LENGTH);
   const messageId = createMessageId();
+  const timestamp = Date.now();
 
   socket.send(
     JSON.stringify({
@@ -485,15 +600,24 @@ elements.form.addEventListener('submit', (event) => {
     })
   );
 
+  const record = storeMessage(target, {
+    sender: senderId,
+    text: safeText,
+    timestamp,
+    direction: 'outgoing',
+    messageId,
+  });
+
   const entry = appendChatMessage({
     sender: senderId,
     text: safeText,
     own: true,
     status: 'enviando…',
     messageId,
+    timestamp,
   });
 
-  pendingMessages.set(messageId, entry);
+  pendingMessages.set(messageId, { ...entry, record });
   localStorage.setItem(TARGET_STORAGE_KEY, target);
 
   elements.input.value = '';
