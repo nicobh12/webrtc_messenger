@@ -140,3 +140,29 @@
 
 * **Uso de herramientas de IA:**
   * **OpenCode:** Apoyo en la implementación de la comunicación entre nodos, el enrutamiento de mensajes hacia destinatarios específicos y los ajustes de la interfaz del chat.
+
+  ### Entrada 7: 27 de noviembre de 2026
+
+* **Tiempo estimado:** 5.0 horas
+
+* **Actividades realizadas:**
+
+  * **Persistencia de conversaciones:**
+    * Implementación de un mecanismo de persistencia de chats mediante almacenamiento local en `localhost`, permitiendo conservar el historial de mensajes intercambiados entre los participantes.
+    * Ajuste de la lógica de almacenamiento y recuperación de conversaciones para mantener los mensajes disponibles al actualizar o volver a cargar la aplicación.
+    * Integración de la persistencia con el módulo de chat, asegurando que los mensajes enviados y recibidos se reflejen correctamente en el historial de cada conversación.
+
+  * **Refactorización del servidor:**
+    * Reorganización de la estructura y lógica de `server.js` para mantener una separación más clara de responsabilidades entre los componentes de la aplicación.
+    * Ajuste de la implementación del servidor para alinearla con la arquitectura y distribución de componentes definida en el proyecto.
+    * Revisión de la integración entre el servidor, el mecanismo de señalización y los componentes encargados de gestionar la comunicación entre los clientes.
+    * Adaptación del flujo de intercambio de mensajes para mantener la coherencia con la arquitectura de comunicación planteada en el informe de investigación.
+
+  * **Pruebas y ajustes:**
+    * Verificación del funcionamiento de la persistencia de conversaciones y la recuperación del historial de mensajes.
+    * Comprobación de la integración entre los componentes después de la reorganización del servidor.
+    * Revisión del comportamiento general del chat para identificar posibles inconsistencias derivadas de los cambios realizados.
+
+* **Uso de herramientas de IA:**
+  * **OpenCode:** Apoyo en la refactorización del servidor, reorganización de la lógica de comunicación e implementación de la persistencia de conversaciones.
+  * **GitHub Copilot:** Asistencia en la edición del código, ajustes de implementación y revisión de la integración entre los componentes del proyecto.
