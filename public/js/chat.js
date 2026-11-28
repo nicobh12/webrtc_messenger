@@ -3,6 +3,7 @@
 import { P2P_OPEN_TIMEOUT_MS, logP2P, waitForDataChannel } from './webrtc.js';
 
 export const TARGET_STORAGE_KEY = 'webrtc-messenger.target';
+export const CONVERSATIONS_STORAGE_KEY = 'webrtc-messenger.conversations';
 const MAX_MESSAGE_LENGTH = 2000;
 
 const REASON_LABELS = {
@@ -48,6 +49,101 @@ export function createMessageId() {
 
 export const pendingMessages = new Map();
 export const conversations = new Map();
+
+export function readStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (error) {
+    console.warn(`No se pudo leer localStorage (${key}):`, error);
+    return null;
+  }
+}
+
+export function writeStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (error) {
+    console.warn(`No se pudo escribir localStorage (${key}):`, error);
+  }
+}
+
+function removeStorage(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.warn(`No se pudo borrar localStorage (${key}):`, error);
+  }
+}
+
+function persistConversations() {
+  try {
+    const serialized = JSON.stringify(
+      [...conversations].map(([userId, history]) => [userId, history.slice(-500)])
+    );
+    writeStorage(CONVERSATIONS_STORAGE_KEY, serialized);
+  } catch (error) {
+    console.warn('No se pudo serializar el historial de conversaciones:', error);
+  }
+}
+
+export function loadConversations() {
+  const serialized = readStorage(CONVERSATIONS_STORAGE_KEY);
+  if (!serialized) return;
+
+  try {
+    const savedConversations = JSON.parse(serialized);
+    if (!Array.isArray(savedConversations)) {
+      throw new TypeError('El historial guardado no tiene el formato esperado.');
+    }
+
+    const loadedConversations = new Map();
+    let needsPersist = false;
+
+    for (const entry of savedConversations) {
+      if (
+        !Array.isArray(entry) ||
+        typeof entry[0] !== 'string' ||
+        !Array.isArray(entry[1])
+      ) {
+        throw new TypeError('Una conversación guardada no tiene el formato esperado.');
+      }
+
+      const history = entry[1].slice(-500);
+      if (history.length !== entry[1].length) needsPersist = true;
+
+      for (const record of history) {
+        if (!record || typeof record !== 'object' || Array.isArray(record)) {
+          throw new TypeError('Un mensaje guardado no tiene el formato esperado.');
+        }
+
+        if (record.transport === 'pending') {
+          record.transport = 'failed';
+          record.status = 'no entregado · recarga';
+          record.tone = 'error';
+          needsPersist = true;
+        }
+      }
+
+      loadedConversations.set(entry[0], history);
+    }
+
+    conversations.clear();
+    for (const [userId, history] of loadedConversations) {
+      conversations.set(userId, history);
+    }
+
+    if (needsPersist) persistConversations();
+  } catch (error) {
+    conversations.clear();
+    console.warn('No se pudo cargar el historial de conversaciones:', error);
+  }
+}
+
+export function clearHistory() {
+  removeStorage(CONVERSATIONS_STORAGE_KEY);
+  conversations.clear();
+  renderConversation();
+}
 
 export function removeEmptyState() {
   if (elements.emptyState?.isConnected) {
@@ -136,7 +232,7 @@ export function updateMessageStatus(entry, text, tone) {
 
 export function setTarget(userId) {
   elements.targetInput.value = userId;
-  localStorage.setItem(TARGET_STORAGE_KEY, userId);
+  writeStorage(TARGET_STORAGE_KEY, userId);
   elements.targetInput.dispatchEvent(new Event('change'));
   elements.input.focus();
 }
@@ -146,6 +242,7 @@ export function storeMessage(userId, record) {
   const history = conversations.get(userId) ?? [];
   history.push(record);
   conversations.set(userId, history);
+  persistConversations();
   return record;
 }
 
@@ -197,6 +294,7 @@ export function markMessageSent(entry, record, text, tone) {
   if (record) {
     record.status = text;
     record.tone = tone;
+    persistConversations();
   }
 }
 
@@ -292,6 +390,7 @@ export function onChatAck(message) {
   if (entry.record) {
     entry.record.status = statusText;
     entry.record.tone = 'ok';
+    persistConversations();
   }
 }
 
@@ -308,6 +407,7 @@ export function onChatError(message) {
     if (entry.record) {
       entry.record.status = statusText;
       entry.record.tone = 'error';
+      persistConversations();
     }
   }
 
@@ -367,7 +467,7 @@ export async function sendMessage(event) {
   });
 
   pendingMessages.set(messageId, { ...entry, record });
-  localStorage.setItem(TARGET_STORAGE_KEY, target);
+  writeStorage(TARGET_STORAGE_KEY, target);
 
   elements.input.value = '';
   elements.input.focus();

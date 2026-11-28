@@ -16,14 +16,18 @@ import {
 import {
   TARGET_STORAGE_KEY,
   addSystemMessage,
+  clearHistory,
   configureChat,
+  loadConversations,
   onChat,
   onChatAck,
   onChatError,
   randomToken,
+  readStorage,
   renderConversation,
   sendMessage,
   setTarget,
+  writeStorage,
 } from './chat.js';
 
 const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -48,6 +52,7 @@ const elements = {
   peerStatus: document.getElementById('peer-status'),
   peerLabel: document.getElementById('peer-label'),
   messages: document.getElementById('chat-messages'),
+  clearHistory: document.getElementById('clear-history'),
   emptyState: document.getElementById('chat-empty'),
   peerList: document.getElementById('peer-list'),
   form: document.getElementById('chat-form'),
@@ -69,15 +74,15 @@ function resolveUserId() {
   const fromQuery = normalizeUserId(params.get('user'));
 
   if (fromQuery) {
-    localStorage.setItem(USER_STORAGE_KEY, fromQuery);
+    writeStorage(USER_STORAGE_KEY, fromQuery);
     return fromQuery;
   }
 
-  const stored = normalizeUserId(localStorage.getItem(USER_STORAGE_KEY));
+  const stored = normalizeUserId(readStorage(USER_STORAGE_KEY));
   if (stored) return stored;
 
   const generated = `cliente-${randomToken()}`;
-  localStorage.setItem(USER_STORAGE_KEY, generated);
+  writeStorage(USER_STORAGE_KEY, generated);
   return generated;
 }
 
@@ -85,7 +90,7 @@ function resolveInitialTarget() {
   const params = new URLSearchParams(window.location.search);
   return (
     normalizeUserId(params.get('target')) ||
-    normalizeUserId(localStorage.getItem(TARGET_STORAGE_KEY)) ||
+    normalizeUserId(readStorage(TARGET_STORAGE_KEY)) ||
     ''
   );
 }
@@ -121,7 +126,7 @@ function renderDirectory() {
   const previousTarget = elements.targetInput.value.trim();
   const desiredTarget =
     normalizeUserId(previousTarget) ||
-    normalizeUserId(localStorage.getItem(TARGET_STORAGE_KEY)) ||
+    normalizeUserId(readStorage(TARGET_STORAGE_KEY)) ||
     '';
 
   // Solo se conserva la selección si el usuario sigue conectado.
@@ -338,17 +343,19 @@ configureChat({
   normalizeUserId,
 });
 
+loadConversations();
+
 elements.userId.textContent = senderId;
 
 const initialTarget = resolveInitialTarget();
 elements.targetInput.value = initialTarget;
 if (initialTarget) {
-  localStorage.setItem(TARGET_STORAGE_KEY, initialTarget);
+  writeStorage(TARGET_STORAGE_KEY, initialTarget);
 }
 
 elements.targetInput.addEventListener('change', () => {
   const currentTarget = elements.targetInput.value.trim();
-  localStorage.setItem(TARGET_STORAGE_KEY, currentTarget);
+  writeStorage(TARGET_STORAGE_KEY, currentTarget);
 
   for (const chip of elements.peerList.querySelectorAll('.peer-chip')) {
     chip.setAttribute('aria-pressed', String(chip.dataset.userId === currentTarget));
@@ -373,11 +380,12 @@ elements.changeUser.addEventListener('click', () => {
     return;
   }
 
-  localStorage.setItem(USER_STORAGE_KEY, normalized);
+  writeStorage(USER_STORAGE_KEY, normalized);
   window.location.reload();
 });
 
 elements.form.addEventListener('submit', sendMessage);
+elements.clearHistory.addEventListener('click', clearHistory);
 
 window.addEventListener('beforeunload', () => {
   isUnloading = true;

@@ -460,6 +460,29 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.chat-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.chat-history-clear {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.chat-history-clear:hover {
+  border-color: var(--plum);
+  color: #fff;
+}
+
 .peer-strip {
   display: flex;
   align-items: center;
