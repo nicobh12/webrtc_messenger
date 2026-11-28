@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
-    <title>Mensajero WebRTC · Fase 4</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="app.js" defer></script>
+    <title>WebRTC</title>
+    <link rel="stylesheet" href="/css/style.css" />
+    <script type="module" src="/js/app.js"></script>
   </head>
   <body>
     <div class="app">
@@ -15,7 +15,7 @@
           <span class="brand__mark" aria-hidden="true">WM</span>
           <div>
             <h1 class="brand__title">WebRTC Messenger</h1>
-            <p class="brand__subtitle">Fase 4 · Chat entre nodos</p>
+            <p class="brand__subtitle">Chat P2P por RTCDataChannel</p>
           </div>
         </div>
 
@@ -171,7 +171,7 @@
               <h2 id="chat-title">Chat</h2>
               <p class="panel-heading__hint">Enrutamiento dirigido entre nodos.</p>
             </div>
-            <span class="badge badge--live">WebSocket</span>
+            <span class="badge badge--live">RTCDataChannel</span>
           </div>
 
           <div class="peer-strip">
@@ -206,6 +206,17 @@
               >
                 <option value="">Selecciona un destinatario</option>
               </select>
+              <span
+                class="p2p-state"
+                id="p2p-state"
+                data-state="idle"
+                role="status"
+                aria-live="polite"
+                title="Estado de la conexión P2P con el destinatario"
+              >
+                <span class="p2p-state__dot" aria-hidden="true"></span>
+                <span id="p2p-state-label">P2P: sin destinatario</span>
+              </span>
             </div>
 
             <div class="chat-form__row">
@@ -226,8 +237,8 @@
           </form>
 
           <p class="chat-note">
-            Fase 4: cada mensaje viaja al nodo donde está conectado el destinatario.
-            WebRTC se añade en la Fase 5.
+            Fase 5: el chat viaja por RTCDataChannel (P2P). El WebSocket se usa para
+            señalización (offer/answer/candidate) y como fallback.
           </p>
         </aside>
       </main>

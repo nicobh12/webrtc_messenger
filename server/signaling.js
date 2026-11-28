@@ -1,142 +1,51 @@
 'use strict';
 
-const http = require('http');
-const path = require('path');
 const crypto = require('crypto');
-const express = require('express');
-const { WebSocketServer, WebSocket } = require('ws');
+const { WebSocket } = require('ws');
+const rooms = require('./rooms');
 
+const {
+  NODE_NAME,
+  SESSION_ID,
+  MAX_USER_ID_LENGTH,
+  localUsers,
+  remoteUsers,
+  peerLinks,
+  outboundPeers,
+  remotePresence,
+  clientSockets,
+  normalizeUserId,
+  truncate,
+  log,
+  sendJson,
+  broadcastPresence,
+  sendToLocalUser,
+  sendHello,
+  registerUser,
+  unregisterUser,
+  presencePayload,
+} = rooms;
 const PORT = Number(process.env.PORT) || 3000;
-const NODE_NAME = process.env.NODE_NAME || 'nodo-local';
-const SESSION_ID = crypto.randomBytes(6).toString('hex');
-const PUBLIC_DIR = path.join(__dirname, 'public');
 const PEER_PATH = '/peer';
-
 const MAX_CHAT_LENGTH = 2000;
-const MAX_USER_ID_LENGTH = 64;
 const MAX_MESSAGE_ID_LENGTH = 100;
 const ACK_TIMEOUT_MS = Number(process.env.ACK_TIMEOUT_MS) || 5000;
-const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS) || 15000;
 const RECONNECT_MIN_MS = Number(process.env.RECONNECT_MIN_MS) || 500;
 const RECONNECT_MAX_MS = Number(process.env.RECONNECT_MAX_MS) || 8000;
 const DEDUPE_TTL_MS = 60 * 1000;
-const USER_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
-function log(...args) {
-  console.log(`[${new Date().toISOString()}] [${NODE_NAME}]`, ...args);
-}
-
-function normalizeUserId(value) {
-  if (typeof value !== 'string') return null;
-  const id = value.trim();
-  return USER_ID_PATTERN.test(id) ? id : null;
-}
-
-function truncate(value, max) {
-  return value.length > max ? value.slice(0, max) : value;
-}
-
-// ---------------------------------------------------------------- Estado
-
-/** userId -> Set<WebSocket> de clientes conectados a ESTE nodo. */
-const localUsers = new Map();
-/** userId -> nodeId donde está conectado el usuario (registro distribuido). */
-const remoteUsers = new Map();
-/** nodeId -> Set<WebSocket> con todos los enlaces (entrantes y salientes). */
-const peerLinks = new Map();
-/** nodeId -> { url, socket, attempts, timer } para los enlaces salientes. */
-const outboundPeers = new Map();
-/** nodeId -> { sessionId, seq } última presencia aceptada de ese nodo. */
-const remotePresence = new Map();
-/** "originNode:messageId" -> expiración, para descartar reenvíos duplicados. */
 const seenPeerMessages = new Map();
-/** "sender:messageId" -> { socket, timer, ... } esperando peer-ack. */
 const pendingAcks = new Map();
-/** Sockets de navegador (no incluye enlaces entre nodos). */
-const clientSockets = new Set();
-
-let presenceSeq = 0;
 let shuttingDown = false;
 
-// ------------------------------------------------------- Servidor HTTP/WS
-
-const app = express();
-app.disable('x-powered-by');
-app.use(express.static(PUBLIC_DIR));
-
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
-
-function directory() {
-  const users = [];
-
-  for (const userId of localUsers.keys()) {
-    users.push({ userId, node: NODE_NAME, local: true });
-  }
-
-  for (const [userId, node] of remoteUsers) {
-    if (!localUsers.has(userId)) {
-      users.push({ userId, node, local: false });
-    }
-  }
-
-  return users.sort((a, b) => a.userId.localeCompare(b.userId));
-}
-
-function peerNames() {
-  return [...peerLinks.keys()].sort();
-}
-
-function presencePayload() {
-  return {
-    type: 'presence',
-    node: NODE_NAME,
-    users: directory(),
-    peers: peerNames(),
-    ts: Date.now(),
-  };
-}
-
-function sendJson(socket, payload) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-
-  try {
-    socket.send(JSON.stringify(payload));
-    return true;
-  } catch (error) {
-    log(`No se pudo enviar "${payload.type}": ${error.message}`);
-    return false;
-  }
-}
-
-function broadcastPresence() {
-  const payload = presencePayload();
-
-  for (const socket of clientSockets) {
-    sendJson(socket, payload);
-  }
-}
-
-function sendToLocalUser(userId, payload) {
-  const sockets = localUsers.get(userId);
-  if (!sockets) return 0;
-
-  let sent = 0;
-  for (const socket of sockets) {
-    if (sendJson(socket, payload)) sent += 1;
-  }
-
-  return sent;
-}
-
 function broadcastPeerPresence(event, userId) {
-  presenceSeq += 1;
+  const seq = rooms.incrementPresenceSeq();
 
   const payload = {
     type: 'peer-presence',
     node: NODE_NAME,
     sessionId: SESSION_ID,
-    seq: presenceSeq,
+    seq,
     event,
     userId,
     ts: Date.now(),
@@ -148,19 +57,6 @@ function broadcastPeerPresence(event, userId) {
     }
   }
 }
-
-function sendHello(socket) {
-  sendJson(socket, {
-    type: 'peer-hello',
-    node: NODE_NAME,
-    sessionId: SESSION_ID,
-    seq: presenceSeq,
-    users: [...localUsers.keys()],
-    ts: Date.now(),
-  });
-}
-
-// ------------------------------------------------------ Destinos entre nodos
 
 function buildPeerUrl(nodeId) {
   return `ws://${nodeId}:${PORT}${PEER_PATH}`;
@@ -214,71 +110,6 @@ function parsePeerTargets() {
 }
 
 // --------------------------------------------------------------- Clientes
-
-function welcomePayload(userId) {
-  return {
-    type: 'welcome',
-    userId,
-    node: NODE_NAME,
-    sessionId: SESSION_ID,
-    users: directory(),
-    peers: peerNames(),
-    ts: Date.now(),
-  };
-}
-
-function registerUser(socket, userId) {
-  if (socket.__userId === userId) {
-    sendJson(socket, welcomePayload(userId));
-    return;
-  }
-
-  if (socket.__userId) {
-    unregisterUser(socket);
-  }
-
-  socket.__userId = userId;
-
-  let sockets = localUsers.get(userId);
-  if (!sockets) {
-    sockets = new Set();
-    localUsers.set(userId, sockets);
-  }
-  sockets.add(socket);
-
-  const isNewUser = sockets.size === 1;
-
-  log(
-    `Usuario "${userId}" registrado (${isNewUser ? 'nuevo' : 'otra conexión'}). ` +
-      `Usuarios locales: ${localUsers.size}.`
-  );
-
-  sendJson(socket, welcomePayload(userId));
-
-  if (isNewUser) {
-    broadcastPeerPresence('join', userId);
-    broadcastPresence();
-  }
-}
-
-function unregisterUser(socket) {
-  const userId = socket.__userId;
-  if (!userId) return;
-
-  socket.__userId = null;
-
-  const sockets = localUsers.get(userId);
-  if (!sockets) return;
-
-  sockets.delete(socket);
-  if (sockets.size > 0) return;
-
-  localUsers.delete(userId);
-  log(`Usuario "${userId}" sin conexiones locales. Usuarios locales: ${localUsers.size}.`);
-
-  broadcastPeerPresence('leave', userId);
-  broadcastPresence();
-}
 
 function handleClientConnection(socket, request) {
   socket.__kind = 'client';
@@ -367,6 +198,13 @@ function handleClientMessage(socket, message, clientId) {
 
     case 'chat':
       handleClientChat(socket, message, clientId);
+      return;
+
+    // WebRTC: el WebSocket solo transporta señalización (Bloque C).
+    case 'offer':
+    case 'answer':
+    case 'candidate':
+      handleClientSignal(socket, message, clientId);
       return;
 
     case 'who':
@@ -539,6 +377,153 @@ function handleClientChat(socket, message, clientId) {
   log(`Chat ${messageId} reenviado a ${targetNode} para ${target}.`);
 }
 
+// ------------------------------------------------- Señalización WebRTC
+
+/** Tipos de señalización aceptados desde un cliente (Bloque C). */
+
+const SIGNAL_TYPES = new Set(['offer', 'answer', 'candidate']);
+
+function isValidSignalPayload(message) {
+  if (message.type === 'offer' || message.type === 'answer') {
+    return Boolean(
+      message.sdp &&
+        typeof message.sdp === 'object' &&
+        typeof message.sdp.type === 'string' &&
+        typeof message.sdp.sdp === 'string'
+    );
+  }
+
+  if (message.type === 'candidate') {
+    return message.candidate === null || (message.candidate && typeof message.candidate === 'object');
+  }
+
+  return false;
+}
+
+function signalError(socket, message, target, reason, detail) {
+  sendJson(socket, {
+    type: 'signal-error',
+    signalType: message.type,
+    target: target ?? null,
+    reason,
+    detail,
+    node: NODE_NAME,
+    ts: Date.now(),
+  });
+
+  log(
+    `Señal ${message.type} no entregada (${reason})${target ? ` -> ${target}` : ''}: ${detail}`
+  );
+}
+
+/**
+ * Enruta offer/answer/candidate igual que un chat: directo si el destinatario
+ * está en este nodo o por "peer-signal" si vive en otro nodo.
+ * La señalización no usa acks: WebRTC reintenta/reniega por sí mismo.
+ */
+function handleClientSignal(socket, message, clientId) {
+  const sender = socket.__userId;
+
+  if (!sender) {
+    sendJson(socket, {
+      type: 'error',
+      code: 'not-registered',
+      detail: 'La señalización WebRTC requiere registro previo.',
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const target = normalizeUserId(message.target);
+
+  if (!target || target === sender) {
+    signalError(socket, message, target, 'invalid-target', 'Destinatario de señalización inválido.');
+    return;
+  }
+
+  if (!isValidSignalPayload(message)) {
+    signalError(
+      socket,
+      message,
+      target,
+      'invalid-signal',
+      'La señal no contiene un SDP o un candidato ICE válido.'
+    );
+    return;
+  }
+
+  const signal = {
+    type: message.type,
+    sender,
+    target,
+    ts: Date.now(),
+  };
+
+  if (message.sdp) signal.sdp = message.sdp;
+  if (message.candidate !== undefined) signal.candidate = message.candidate;
+
+  // 1) Destinatario conectado a ESTE nodo: entrega directa.
+  if (localUsers.has(target)) {
+    const recipients = sendToLocalUser(target, { ...signal, fromNode: NODE_NAME });
+
+    if (recipients > 0) {
+      log(`Señal ${message.type} de ${sender} (${clientId}) -> ${target} (local).`);
+      return;
+    }
+  }
+
+  // 2) Destinatario en otro nodo: se enruta por el enlace de nodos.
+  const targetNode = remoteUsers.get(target);
+
+  if (!targetNode) {
+    signalError(
+      socket,
+      message,
+      target,
+      'offline',
+      `El usuario "${target}" no está conectado en ningún nodo.`
+    );
+    return;
+  }
+
+  const peerSocket = getPeerSocket(targetNode);
+
+  if (!peerSocket) {
+    signalError(
+      socket,
+      message,
+      target,
+      'peer-unreachable',
+      `No hay enlace activo con el nodo "${targetNode}".`
+    );
+    return;
+  }
+
+  const sent = sendJson(peerSocket, {
+    type: 'peer-signal',
+    signalType: message.type,
+    originNode: NODE_NAME,
+    sender,
+    target,
+    sdp: message.sdp,
+    candidate: message.candidate,
+    ts: Date.now(),
+  });
+
+  if (!sent) {
+    signalError(
+      socket,
+      message,
+      target,
+      'peer-unreachable',
+      `No se pudo escribir en el enlace con "${targetNode}".`
+    );
+    return;
+  }
+
+  log(`Señal ${message.type} de ${sender} reenviada a ${targetNode} para ${target}.`);
+}
+
 // -------------------------------------------------------- Mensajes de nodos
 
 function isDuplicatePeerMessage(key) {
@@ -574,6 +559,9 @@ function handlePeerMessage(socket, raw) {
       break;
     case 'peer-ack':
       handlePeerAck(socket, message);
+      break;
+    case 'peer-signal':
+      handlePeerSignal(socket, message);
       break;
     default:
       log(`Mensaje peer desconocido de ${socket.__nodeId}: ${message.type}`);
@@ -754,6 +742,56 @@ function handlePeerChat(socket, message) {
 
   // Importante: un chat recibido de otro nodo NUNCA se reenvía.
   // Se entrega solo a sockets locales y se confirma; así no hay bucles.
+}
+
+/**
+ * Reenvía offer/answer/candidate recibidos de otro nodo al usuario local.
+ * Igual que peer-chat: un peer-signal NUNCA se reenvía a un tercer nodo.
+ */
+function handlePeerSignal(socket, message) {
+  const originNode =
+    typeof message.originNode === 'string' ? message.originNode : socket.__nodeId;
+  const signalType = message.signalType;
+  const sender = normalizeUserId(message.sender);
+  const target = normalizeUserId(message.target);
+
+  if (!SIGNAL_TYPES.has(signalType) || !sender || !target) {
+    log(`peer-signal inválido de ${originNode}; se descarta.`);
+    return;
+  }
+
+  if (originNode !== socket.__nodeId) {
+    log(
+      `peer-signal con originNode "${originNode}" no coincide con el enlace ` +
+        `"${socket.__nodeId}"; se descarta.`
+    );
+    return;
+  }
+
+  const payload = {
+    type: signalType,
+    sender,
+    target,
+    fromNode: originNode,
+    ts: Number.isFinite(message.ts) ? message.ts : Date.now(),
+  };
+
+  if (message.sdp) payload.sdp = message.sdp;
+  if (message.candidate !== undefined) payload.candidate = message.candidate;
+
+  const recipients = sendToLocalUser(target, payload);
+
+  if (recipients === 0) {
+    log(
+      `peer-signal ${signalType} de ${originNode} para ${target}: ` +
+        'destinatario no conectado; se descarta.'
+    );
+    return;
+  }
+
+  log(`peer-signal ${signalType} de ${originNode} para ${target}: entregado (${recipients}).`);
+
+  // Importante: un peer-signal recibido de otro nodo NUNCA se reenvía.
 }
 
 function handlePeerAck(socket, message) {
@@ -1022,158 +1060,22 @@ function connectToPeer(nodeId) {
 
 // --------------------------------------------------------- HTTP de control
 
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    node: NODE_NAME,
-    sessionId: SESSION_ID,
-    clients: clientSockets.size,
-    users: localUsers.size,
-    peers: peerNames(),
-  });
-});
 
-app.get('/api/state', (_req, res) => {
-  res.json({
-    node: NODE_NAME,
-    sessionId: SESSION_ID,
-    presenceSeq,
-    clients: [...clientSockets].map((socket) => ({
-      userId: socket.__userId ?? null,
-      readyState: socket.readyState,
-    })),
-    localUsers: [...localUsers.keys()].sort(),
-    remoteUsers: Object.fromEntries(remoteUsers),
-    peers: peerNames(),
-    outbound: [...outboundPeers].map(([node, state]) => ({
-      node,
-      url: state.url,
-      readyState: state.socket ? state.socket.readyState : null,
-      attempts: state.attempts,
-      reconnectScheduled: Boolean(state.timer),
-    })),
-    pendingAcks: [...pendingAcks.keys()],
-  });
-});
-
-// ------------------------------------------------------------ Ciclo de vida
-
-wss.on('connection', (socket, request) => {
-  socket.__isAlive = true;
-
-  let url;
-  try {
-    url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
-  } catch {
-    socket.close(1008, 'URL inválida');
-    return;
-  }
-
-  if (url.pathname === PEER_PATH) {
-    handlePeerConnection(socket, request, url);
-    return;
-  }
-
-  handleClientConnection(socket, request);
-});
-
-wss.on('error', (error) => {
-  log(`Error del servidor WebSocket: ${error.message}`);
-});
-
-server.on('error', (error) => {
-  log(`Error del servidor HTTP: ${error.message}`);
-});
-
-// Heartbeat: detecta enlaces y clientes muertos (ping/pong de WebSocket).
-const heartbeat = setInterval(() => {
-  for (const socket of wss.clients) {
-    if (socket.readyState !== WebSocket.OPEN) continue;
-
-    if (socket.__isAlive === false) {
-      log(`Sin respuesta de heartbeat (${socket.__kind ?? 'desconocido'}); se cierra el socket.`);
-      socket.terminate();
-      continue;
-    }
-
-    socket.__isAlive = false;
-    try {
-      socket.ping();
-    } catch {
-      // El evento "close" se encarga de limpiar el estado.
-    }
-  }
-}, HEARTBEAT_INTERVAL_MS);
-heartbeat.unref?.();
-
-// Limpieza periódica de la caché de deduplicación.
-const dedupeCleanup = setInterval(() => {
-  const now = Date.now();
-  for (const [key, expiresAt] of seenPeerMessages) {
-    if (expiresAt <= now) seenPeerMessages.delete(key);
-  }
-}, 30 * 1000);
-dedupeCleanup.unref?.();
+rooms.setHooks({ broadcastPeerPresence });
 
 for (const [nodeId, url] of parsePeerTargets()) {
   outboundPeers.set(nodeId, { url, socket: null, attempts: 0, timer: null });
 }
 
-server.listen(PORT, () => {
-  log(`Servidor HTTP/WebSocket escuchando en el puerto ${PORT} (sesión ${SESSION_ID}).`);
-  log(`Interfaz web: http://localhost:${PORT}`);
-  log(`Rutas: / (clientes) y ${PEER_PATH} (comunicación entre nodos).`);
-
-  if (outboundPeers.size === 0) {
-    log(
-      'Sin nodos peer configurados. Define PEER_NODES o PEER_URLS para habilitar ' +
-        'el chat entre nodos.'
-    );
-    return;
-  }
-
-  for (const nodeId of outboundPeers.keys()) {
-    connectToPeer(nodeId);
-  }
-});
-
-function shutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  log(`Señal ${signal} recibida. Cerrando servidor...`);
-
-  clearInterval(heartbeat);
-  clearInterval(dedupeCleanup);
-
-  for (const state of outboundPeers.values()) {
-    if (state.timer) clearTimeout(state.timer);
-    state.socket?.terminate();
-  }
-
-  for (const pending of pendingAcks.values()) {
-    clearTimeout(pending.timer);
-  }
-  pendingAcks.clear();
-
-  for (const socket of wss.clients) {
-    try {
-      socket.close(1001, 'Servidor apagándose');
-    } catch {
-      // Ignorar sockets ya cerrados.
-    }
-  }
-
-  wss.close(() => {
-    server.close(() => {
-      log('Servidor cerrado correctamente.');
-      process.exit(0);
-    });
-  });
-
-  // Cierre forzado si alguna conexión impide terminar el proceso.
-  setTimeout(() => process.exit(1), 5000).unref();
+function setShuttingDown(value) {
+  shuttingDown = value;
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+module.exports = {
+  seenPeerMessages,
+  pendingAcks,
+  handleClientConnection,
+  handlePeerConnection,
+  connectToPeer,
+  setShuttingDown,
+};

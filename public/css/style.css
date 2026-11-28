@@ -604,6 +604,10 @@ body {
   color: var(--danger);
 }
 
+.message__status--warn {
+  color: var(--warning);
+}
+
 .message__text {
   margin: 0;
   padding: 0.6rem 0.8rem;
@@ -739,6 +743,54 @@ body {
 .chat-form__select--target {
   flex: 1;
   font-size: 0.8rem;
+}
+
+/* Indicador P2P: gris=new, ámbar=connecting, verde=connected, rojo=failed */
+.p2p-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.p2p-state__dot,
+.p2p-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #b9b2b9;
+  box-shadow: 0 0 0 2px rgba(37, 33, 42, 0.06);
+  flex: 0 0 auto;
+}
+
+.p2p-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-left: 0.1rem;
+}
+
+.p2p-state[data-state="connecting"] .p2p-state__dot,
+.p2p-dot[data-state="connecting"] {
+  background: var(--warning);
+}
+
+.p2p-state[data-state="connected"] .p2p-state__dot,
+.p2p-dot[data-state="connected"] {
+  background: var(--success);
+}
+
+.p2p-state[data-state="failed"] .p2p-state__dot,
+.p2p-dot[data-state="failed"] {
+  background: var(--danger);
+}
+
+.p2p-state[data-state="disconnected"] .p2p-state__dot,
+.p2p-dot[data-state="disconnected"] {
+  background: var(--muted);
 }
 
 .chat-form__send {

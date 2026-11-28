@@ -6,10 +6,10 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
-COPY server.js ./
+COPY server ./server
 COPY public ./public
 
 # Puerto interno del servidor HTTP/WebSocket (documental; se publica con Compose).
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["node", "server/server.js"]
