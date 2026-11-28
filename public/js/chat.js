@@ -2,7 +2,6 @@
 
 import { P2P_OPEN_TIMEOUT_MS, logP2P, waitForDataChannel } from './webrtc.js';
 
-export const TARGET_STORAGE_KEY = 'webrtc-messenger.target';
 export const CONVERSATIONS_STORAGE_KEY = 'webrtc-messenger.conversations';
 const MAX_MESSAGE_LENGTH = 2000;
 
@@ -13,6 +12,7 @@ const REASON_LABELS = {
   'peer-unreachable': 'nodo inalcanzable',
   timeout: 'sin confirmación del nodo',
   'remote-error': 'error en el nodo remoto',
+  'invalid-targets': 'destinatarios inválidos',
 };
 const timeFormatter = new Intl.DateTimeFormat('es', {
   hour: '2-digit',
@@ -170,7 +170,16 @@ export function addSystemMessage(text) {
   scrollToBottom();
 }
 
-export function appendChatMessage({ sender, text, own, fromNode, status, messageId, timestamp }) {
+export function appendChatMessage({
+  sender,
+  text,
+  own,
+  fromNode,
+  status,
+  messageId,
+  timestamp,
+  targets,
+}) {
   removeEmptyState();
 
   const message = document.createElement('article');
@@ -191,6 +200,13 @@ export function appendChatMessage({ sender, text, own, fromNode, status, message
     via.className = 'message__via';
     via.textContent = `· ${fromNode}`;
     meta.append(via);
+  }
+
+  if (own && Array.isArray(targets) && targets.length > 1) {
+    const recipients = document.createElement('span');
+    recipients.className = 'message__recipients';
+    recipients.textContent = `para: ${targets.join(', ')}`;
+    meta.append(recipients);
   }
 
   const time = document.createElement('time');
@@ -230,13 +246,6 @@ export function updateMessageStatus(entry, text, tone) {
   entry.statusEl.classList.toggle('message__status--warn', tone === 'warn');
 }
 
-export function setTarget(userId) {
-  elements.targetInput.value = userId;
-  writeStorage(TARGET_STORAGE_KEY, userId);
-  elements.targetInput.dispatchEvent(new Event('change'));
-  elements.input.focus();
-}
-
 /** Guarda un mensaje en el historial aislado del usuario indicado. */
 export function storeMessage(userId, record) {
   const history = conversations.get(userId) ?? [];
@@ -274,6 +283,7 @@ export function renderConversation() {
       status: record.status,
       messageId: record.messageId,
       timestamp: record.timestamp,
+      targets: record.targets,
     });
 
     if (record.tone) updateMessageStatus(entry, record.status, record.tone);
@@ -282,8 +292,12 @@ export function renderConversation() {
     if (record.messageId) {
       const pending = pendingMessages.get(record.messageId);
       if (pending) {
-        pending.element = entry.element;
-        pending.statusEl = entry.statusEl;
+        if (pending.kind === 'multicast') {
+          pending.entries.set(target, entry);
+        } else {
+          pending.element = entry.element;
+          pending.statusEl = entry.statusEl;
+        }
       }
     }
   }
@@ -363,6 +377,7 @@ export function onChat(message) {
     direction: 'incoming',
     fromNode,
     messageId: typeof message.messageId === 'string' ? message.messageId : null,
+    targets: Array.isArray(message.targets) ? message.targets : undefined,
   });
 
   // Solo se pinta en el DOM si el remitente coincide con el destinatario seleccionado.
@@ -380,7 +395,7 @@ export function onChat(message) {
 
 export function onChatAck(message) {
   const entry = pendingMessages.get(message.messageId);
-  if (!entry) return;
+  if (!entry || entry.kind === 'multicast') return;
 
   pendingMessages.delete(message.messageId);
   const fallbackSuffix = entry.record?.transport === 'fallback' ? ' (fallback)' : '';
@@ -418,36 +433,49 @@ export function onChatError(message) {
   );
 }
 
-export async function sendMessage(event) {
-  event.preventDefault();
-
+export async function sendMessage({ text, targets }) {
   const socket = getSocket();
-  const text = elements.input.value.trim();
-  const target = normalizeUserId(elements.targetInput.value);
+  const messageText = typeof text === 'string' ? text.trim() : '';
 
-  if (!text) return;
+  if (!messageText) return;
 
   if (!isRegistered() || !socket || socket.readyState !== WebSocket.OPEN) {
     addSystemMessage('Sin conexión con el servidor. Espera a que se restablezca.');
     return;
   }
 
-  if (!target) {
-    addSystemMessage('Indica un destinatario válido (letras, números, ".", "_" o "-").');
-    elements.targetInput.focus();
+  const normalizedTargets = Array.isArray(targets)
+    ? targets.map((target) => normalizeUserId(target))
+    : [];
+  if (normalizedTargets.length === 0) {
+    addSystemMessage('Selecciona un destinatario.');
     return;
   }
 
-  if (target === senderId) {
-    addSystemMessage('Escribe el identificador de otro usuario, no el tuyo.');
-    elements.targetInput.focus();
+  if (
+    normalizedTargets.some((target) => !target || target === senderId) ||
+    new Set(normalizedTargets).size !== normalizedTargets.length
+  ) {
+    addSystemMessage('Selecciona destinatarios válidos y distintos a tu usuario.');
     return;
   }
 
-  const safeText = text.slice(0, MAX_MESSAGE_LENGTH);
+  const safeText = messageText.slice(0, MAX_MESSAGE_LENGTH);
   const messageId = createMessageId();
   const timestamp = Date.now();
 
+  if (normalizedTargets.length > 1) {
+    await sendMulticastMessage(
+      socket,
+      safeText,
+      normalizedTargets,
+      messageId,
+      timestamp
+    );
+    return;
+  }
+
+  const target = normalizedTargets[0];
   const record = storeMessage(target, {
     sender: senderId,
     text: safeText,
@@ -467,7 +495,6 @@ export async function sendMessage(event) {
   });
 
   pendingMessages.set(messageId, { ...entry, record });
-  writeStorage(TARGET_STORAGE_KEY, target);
 
   elements.input.value = '';
   elements.input.focus();
@@ -498,5 +525,222 @@ export async function sendMessage(event) {
   }
 
   fallbackToWebSocket(target, safeText, messageId, entry, record);
+}
 
+function updateMulticastStatus(pending) {
+  const complete = pending.targets.every((target) => pending.results.has(target));
+  const deliveredTargets = pending.targets.filter(
+    (target) => pending.results.get(target)?.status === 'delivered'
+  );
+  const failedTargets = complete
+    ? pending.targets.filter((target) => pending.results.get(target)?.status !== 'delivered')
+    : [];
+  const websocketCount = deliveredTargets.filter((target) =>
+    pending.fallbackTargets.has(target)
+  ).length;
+
+  let status;
+  let tone;
+
+  if (complete && failedTargets.length === 0 && websocketCount === 0) {
+    status = `enviado por RTCDataChannel a ${pending.targets.length}/${pending.targets.length}`;
+    tone = 'ok';
+  } else if (complete) {
+    status = `entregado a ${deliveredTargets.length}/${pending.targets.length}`;
+    if (websocketCount > 0) status += ` (${websocketCount} por WebSocket)`;
+    if (failedTargets.length > 0) {
+      status += ` · fallo con ${failedTargets.join(', ')}`;
+    }
+    tone = failedTargets.length > 0 ? 'error' : 'ok';
+  } else {
+    const rtcCount = pending.targets.filter(
+      (target) => pending.results.get(target)?.transport === 'rtcdatachannel'
+    ).length;
+    status = `enviando · RTCDataChannel ${rtcCount}/${pending.targets.length}`;
+    tone = 'warn';
+  }
+
+  for (const record of pending.records.values()) {
+    record.status = status;
+    record.tone = tone;
+  }
+  for (const entry of pending.entries.values()) {
+    updateMessageStatus(entry, status, tone);
+  }
+  persistConversations();
+
+  if (complete) pendingMessages.delete(pending.messageId);
+}
+
+async function sendMulticastMessage(socket, text, targets, messageId, timestamp) {
+  const records = new Map();
+  for (const target of targets) {
+    records.set(
+      target,
+      storeMessage(target, {
+        sender: senderId,
+        text,
+        timestamp,
+        direction: 'outgoing',
+        messageId,
+        transport: 'pending',
+        targets: [...targets],
+      })
+    );
+  }
+
+  const activeTarget = elements.targetInput.value.trim();
+  const displayTarget = targets.includes(activeTarget) ? activeTarget : targets[0];
+  const entry = appendChatMessage({
+    sender: senderId,
+    text,
+    own: true,
+    status: 'enviando…',
+    messageId,
+    timestamp,
+    targets,
+  });
+  const pending = {
+    kind: 'multicast',
+    messageId,
+    targets,
+    records,
+    entries: new Map([[displayTarget, entry]]),
+    results: new Map(),
+    fallbackTargets: new Set(),
+  };
+  pendingMessages.set(messageId, pending);
+
+  elements.input.value = '';
+  elements.input.focus();
+
+  const failedTargets = [];
+  for (const target of targets) {
+    const record = records.get(target);
+    let channel = null;
+
+    try {
+      channel = await waitForDataChannel(target, P2P_OPEN_TIMEOUT_MS);
+    } catch (error) {
+      logP2P(`No se pudo preparar el DataChannel con ${target}: ${error.message}`);
+    }
+
+    if (channel && channel.readyState === 'open') {
+      try {
+        channel.send(
+          JSON.stringify({
+            messageId,
+            sender: senderId,
+            text,
+            timestamp,
+            targets,
+          })
+        );
+        record.transport = 'datachannel';
+        pending.results.set(target, {
+          target,
+          status: 'delivered',
+          transport: 'rtcdatachannel',
+        });
+        updateMulticastStatus(pending);
+        logP2P(`chat ${messageId} enviado por RTCDataChannel a ${target}.`);
+        continue;
+      } catch (error) {
+        logP2P(`Fallo al enviar por RTCDataChannel a ${target} (${error.message}); se usa WebSocket.`);
+      }
+    } else {
+      logP2P(`Sin DataChannel abierto con ${target}; se usa WebSocket (fallback).`);
+    }
+
+    record.transport = 'fallback';
+    failedTargets.push(target);
+    pending.fallbackTargets.add(target);
+  }
+
+  persistConversations();
+
+  if (failedTargets.length === 0) {
+    updateMulticastStatus(pending);
+    return;
+  }
+
+  if (socket.readyState !== WebSocket.OPEN) {
+    for (const target of failedTargets) {
+      records.get(target).transport = 'failed';
+      pending.results.set(target, { target, status: 'failed', reason: 'websocket-offline' });
+    }
+    updateMulticastStatus(pending);
+    addSystemMessage('Sin conexión con el servidor. Espera a que se restablezca.');
+    return;
+  }
+
+  try {
+    socket.send(
+      JSON.stringify({
+        type: 'chat-multicast',
+        messageId,
+        sender: senderId,
+        targets: failedTargets,
+        text,
+      })
+    );
+  } catch (error) {
+    for (const target of failedTargets) {
+      records.get(target).transport = 'failed';
+      pending.results.set(target, { target, status: 'failed', reason: 'websocket-error' });
+    }
+    updateMulticastStatus(pending);
+    logP2P(`Fallo al enviar el chat ${messageId} por WebSocket: ${error.message}`);
+  }
+}
+
+export function onChatMulticastAck(message) {
+  const pending = pendingMessages.get(message.messageId);
+  if (!pending || pending.kind !== 'multicast') return;
+
+  const results = Array.isArray(message.results) ? message.results : [];
+  const unresolvedFallbackTargets = pending.targets.filter(
+    (target) => pending.fallbackTargets.has(target) && !pending.results.has(target)
+  );
+  let matchedResult = false;
+
+  for (const result of results) {
+    const target = normalizeUserId(result?.target);
+    if (!target || !pending.fallbackTargets.has(target)) continue;
+
+    const delivered = result.status === 'delivered';
+    pending.results.set(target, {
+      target,
+      status: delivered ? 'delivered' : 'failed',
+      reason: result.reason,
+      transport: 'websocket',
+    });
+    if (!delivered) pending.records.get(target).transport = 'failed';
+    matchedResult = true;
+  }
+
+  if (!matchedResult && results.some((result) => result?.status === 'invalid')) {
+    for (const target of unresolvedFallbackTargets) {
+      pending.results.set(target, {
+        target,
+        status: 'failed',
+        reason: 'invalid-targets',
+        transport: 'websocket',
+      });
+      pending.records.get(target).transport = 'failed';
+    }
+  } else {
+    for (const target of unresolvedFallbackTargets) {
+      if (pending.results.has(target)) continue;
+      pending.results.set(target, {
+        target,
+        status: 'failed',
+        reason: 'remote-error',
+        transport: 'websocket',
+      });
+      pending.records.get(target).transport = 'failed';
+    }
+  }
+
+  updateMulticastStatus(pending);
 }

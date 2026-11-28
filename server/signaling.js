@@ -36,6 +36,7 @@ const DEDUPE_TTL_MS = 60 * 1000;
 
 const seenPeerMessages = new Map();
 const pendingAcks = new Map();
+const pendingMulticasts = new Map();
 let shuttingDown = false;
 
 function broadcastPeerPresence(event, userId) {
@@ -200,6 +201,10 @@ function handleClientMessage(socket, message, clientId) {
       handleClientChat(socket, message, clientId);
       return;
 
+    case 'chat-multicast':
+      handleClientMulticast(socket, message, clientId);
+      return;
+
     // WebRTC: el WebSocket solo transporta señalización (Bloque C).
     case 'offer':
     case 'answer':
@@ -274,7 +279,10 @@ function handleClientChat(socket, message, clientId) {
 
   log(`Chat ${messageId} de ${sender} (${clientId}) -> ${target}: ${truncate(text, 120)}`);
 
-  // 1) Destinatario conectado a ESTE nodo: entrega directa.
+  deliverChat(sender, target, messageId, text, socket);
+}
+
+function deliverChat(sender, target, messageId, text, socket, multicastKey = null) {
   if (localUsers.has(target)) {
     const recipients = sendToLocalUser(target, {
       type: 'chat',
@@ -287,25 +295,30 @@ function handleClientChat(socket, message, clientId) {
     });
 
     if (recipients > 0) {
-      sendJson(socket, {
-        type: 'chat-ack',
-        messageId,
-        sender,
-        target,
-        targetNode: NODE_NAME,
-        status: 'delivered',
-        recipients,
-        ts: Date.now(),
-      });
+      if (!multicastKey) {
+        sendJson(socket, {
+          type: 'chat-ack',
+          messageId,
+          sender,
+          target,
+          targetNode: NODE_NAME,
+          status: 'delivered',
+          recipients,
+          ts: Date.now(),
+        });
+      }
       log(`Chat ${messageId} entregado localmente a ${target} (${recipients} conexión/es).`);
-      return;
+      return { target, status: 'delivered', transport: 'websocket', targetNode: NODE_NAME };
     }
   }
 
-  // 2) Destinatario en otro nodo: se consulta el registro distribuido.
   const targetNode = remoteUsers.get(target);
 
   if (!targetNode) {
+    if (multicastKey) {
+      return { target, status: 'offline', reason: 'offline' };
+    }
+
     chatError(
       socket,
       messageId,
@@ -313,12 +326,16 @@ function handleClientChat(socket, message, clientId) {
       'offline',
       `El usuario "${target}" no está conectado en ningún nodo.`
     );
-    return;
+    return { target, status: 'offline', reason: 'offline' };
   }
 
   const peerSocket = getPeerSocket(targetNode);
 
   if (!peerSocket) {
+    if (multicastKey) {
+      return { target, status: 'peer-unreachable', reason: 'peer-unreachable' };
+    }
+
     chatError(
       socket,
       messageId,
@@ -326,29 +343,49 @@ function handleClientChat(socket, message, clientId) {
       'peer-unreachable',
       `No hay enlace activo con el nodo "${targetNode}".`
     );
-    return;
+    return { target, status: 'peer-unreachable', reason: 'peer-unreachable' };
   }
 
-  const key = `${sender}:${messageId}`;
+  const key = `${sender}:${messageId}:${target}`;
 
   if (pendingAcks.has(key)) {
     log(`Chat ${messageId} ya está pendiente; se ignora el duplicado.`);
-    return;
+    return {
+      target,
+      status: multicastKey ? 'duplicate' : 'pending',
+      reason: 'duplicate',
+    };
   }
 
   const timer = setTimeout(() => {
     pendingAcks.delete(key);
-    chatError(
-      socket,
-      messageId,
-      target,
-      'timeout',
-      `El nodo "${targetNode}" no confirmó la entrega en ${ACK_TIMEOUT_MS} ms.`
-    );
+    if (multicastKey) {
+      resolveMulticastTarget(multicastKey, {
+        target,
+        status: 'timeout',
+        reason: 'timeout',
+      });
+    } else {
+      chatError(
+        socket,
+        messageId,
+        target,
+        'timeout',
+        `El nodo "${targetNode}" no confirmó la entrega en ${ACK_TIMEOUT_MS} ms.`
+      );
+    }
   }, ACK_TIMEOUT_MS);
   timer.unref?.();
 
-  pendingAcks.set(key, { socket, messageId, sender, target, targetNode, timer });
+  pendingAcks.set(key, {
+    socket,
+    messageId,
+    sender,
+    target,
+    targetNode,
+    timer,
+    multicastKey,
+  });
 
   const sent = sendJson(peerSocket, {
     type: 'peer-chat',
@@ -364,6 +401,10 @@ function handleClientChat(socket, message, clientId) {
   if (!sent) {
     clearTimeout(timer);
     pendingAcks.delete(key);
+    if (multicastKey) {
+      return { target, status: 'peer-unreachable', reason: 'peer-unreachable' };
+    }
+
     chatError(
       socket,
       messageId,
@@ -371,10 +412,116 @@ function handleClientChat(socket, message, clientId) {
       'peer-unreachable',
       `No se pudo escribir en el enlace con "${targetNode}".`
     );
-    return;
+    return { target, status: 'peer-unreachable', reason: 'peer-unreachable' };
   }
 
   log(`Chat ${messageId} reenviado a ${targetNode} para ${target}.`);
+  return { target, status: 'pending', targetNode };
+}
+
+function handleClientMulticast(socket, message, clientId) {
+  if (!socket.__userId) {
+    const fallback =
+      normalizeUserId(message.sender) || `anon-${crypto.randomBytes(3).toString('hex')}`;
+    registerUser(socket, fallback);
+  }
+
+  const sender = socket.__userId;
+  const messageId =
+    typeof message.messageId === 'string' && message.messageId.trim()
+      ? truncate(message.messageId.trim(), MAX_MESSAGE_ID_LENGTH)
+      : crypto.randomUUID();
+  const rawTargets = message.targets;
+  const targets = Array.isArray(rawTargets)
+    ? rawTargets.map((target) => normalizeUserId(target))
+    : [];
+  const seenTargets = new Set();
+  const invalidTargets =
+    !Array.isArray(rawTargets) ||
+    rawTargets.length === 0 ||
+    targets.some((target) => {
+      if (!target || target === sender || seenTargets.has(target)) return true;
+      seenTargets.add(target);
+      return false;
+    });
+
+  if (invalidTargets) {
+    const results =
+      Array.isArray(rawTargets) && rawTargets.length > 0
+        ? rawTargets.map((target) => ({
+            target,
+            status: 'invalid',
+            reason: 'invalid-targets',
+          }))
+        : [{ target: null, status: 'invalid', reason: 'invalid-targets' }];
+
+    sendJson(socket, {
+      type: 'chat-multicast-ack',
+      messageId,
+      sender,
+      results,
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  const text =
+    typeof message.text === 'string'
+      ? truncate(message.text.trim(), MAX_CHAT_LENGTH)
+      : '';
+
+  if (!text) {
+    sendJson(socket, {
+      type: 'chat-multicast-ack',
+      messageId,
+      sender,
+      results: targets.map((target) => ({
+        target,
+        status: 'invalid',
+        reason: 'empty-text',
+      })),
+      ts: Date.now(),
+    });
+    return;
+  }
+
+  log(
+    `Chat multicast ${messageId} de ${sender} (${clientId}) -> ` +
+      `${targets.join(', ')}: ${truncate(text, 120)}`
+  );
+
+  const key = `${sender}:${messageId}`;
+  const multicast = {
+    socket,
+    sender,
+    messageId,
+    targets,
+    results: new Map(),
+  };
+  pendingMulticasts.set(key, multicast);
+
+  for (const target of targets) {
+    const result = deliverChat(sender, target, messageId, text, socket, key);
+    if (result.status !== 'pending') resolveMulticastTarget(key, result);
+  }
+}
+
+function resolveMulticastTarget(key, result) {
+  const multicast = pendingMulticasts.get(key);
+  if (!multicast || multicast.results.has(result.target)) return;
+
+  multicast.results.set(result.target, result);
+
+  if (multicast.results.size !== multicast.targets.length) return;
+
+  pendingMulticasts.delete(key);
+  sendJson(multicast.socket, {
+    type: 'chat-multicast-ack',
+    messageId: multicast.messageId,
+    sender: multicast.sender,
+    results: multicast.targets.map((target) => multicast.results.get(target)),
+    ts: Date.now(),
+  });
 }
 
 // ------------------------------------------------- Señalización WebRTC
@@ -798,10 +945,11 @@ function handlePeerAck(socket, message) {
   const messageId =
     typeof message.messageId === 'string' ? message.messageId.trim() : '';
   const sender = normalizeUserId(message.sender);
+  const target = normalizeUserId(message.target);
 
-  if (!messageId || !sender) return;
+  if (!messageId || !sender || !target) return;
 
-  const key = `${sender}:${messageId}`;
+  const key = `${sender}:${messageId}:${target}`;
   const pending = pendingAcks.get(key);
 
   if (!pending) {
@@ -811,6 +959,17 @@ function handlePeerAck(socket, message) {
 
   clearTimeout(pending.timer);
   pendingAcks.delete(key);
+
+  if (pending.multicastKey) {
+    resolveMulticastTarget(pending.multicastKey, {
+      target,
+      status: message.status === 'delivered' ? 'delivered' : 'offline',
+      reason: message.status === 'delivered' ? undefined : 'offline',
+      transport: 'websocket',
+      targetNode: message.targetNode || pending.targetNode,
+    });
+    return;
+  }
 
   if (message.status === 'delivered') {
     sendJson(pending.socket, {
@@ -915,6 +1074,15 @@ function failPendingAcksForNode(nodeId) {
 
     clearTimeout(pending.timer);
     pendingAcks.delete(key);
+
+    if (pending.multicastKey) {
+      resolveMulticastTarget(pending.multicastKey, {
+        target: pending.target,
+        status: 'peer-unreachable',
+        reason: 'peer-unreachable',
+      });
+      continue;
+    }
 
     chatError(
       pending.socket,

@@ -14,7 +14,6 @@ import {
   renderActiveP2PState,
 } from './webrtc.js';
 import {
-  TARGET_STORAGE_KEY,
   addSystemMessage,
   clearHistory,
   configureChat,
@@ -22,11 +21,11 @@ import {
   onChat,
   onChatAck,
   onChatError,
+  onChatMulticastAck,
   randomToken,
   readStorage,
   renderConversation,
   sendMessage,
-  setTarget,
   writeStorage,
 } from './chat.js';
 
@@ -36,6 +35,7 @@ const RECONNECT_DELAY_MS = 2000;
 const MAX_USER_ID_LENGTH = 64;
 const USER_ID_PATTERN = new RegExp(`^[A-Za-z0-9._-]{1,${MAX_USER_ID_LENGTH}}$`);
 const USER_STORAGE_KEY = 'webrtc-messenger.userId';
+const TARGETS_STORAGE_KEY = 'webrtc-messenger.targets';
 
 const STATUS_LABELS = {
   connecting: 'Conectando…',
@@ -57,6 +57,7 @@ const elements = {
   peerList: document.getElementById('peer-list'),
   form: document.getElementById('chat-form'),
   targetInput: document.getElementById('chat-target'),
+  selectedTargetsLabel: document.getElementById('selected-targets-label'),
   input: document.getElementById('chat-input'),
   sendButton: document.getElementById('chat-send'),
   p2pState: document.getElementById('p2p-state'),
@@ -86,17 +87,8 @@ function resolveUserId() {
   return generated;
 }
 
-function resolveInitialTarget() {
-  const params = new URLSearchParams(window.location.search);
-  return (
-    normalizeUserId(params.get('target')) ||
-    normalizeUserId(readStorage(TARGET_STORAGE_KEY)) ||
-    ''
-  );
-}
-
-
 const senderId = resolveUserId();
+const selectedTargets = new Set();
 let socket = null;
 let reconnectTimer = null;
 let hasConnected = false;
@@ -104,6 +96,29 @@ let offlineNotified = false;
 let isUnloading = false;
 let registered = false;
 let directory = [];
+
+function loadSelectedTargets() {
+  const serialized = readStorage(TARGETS_STORAGE_KEY);
+  if (!serialized) return;
+
+  try {
+    const savedTargets = JSON.parse(serialized);
+    if (!Array.isArray(savedTargets)) {
+      throw new TypeError('La selección guardada no tiene el formato esperado.');
+    }
+
+    for (const value of savedTargets) {
+      const target = normalizeUserId(value);
+      if (target) selectedTargets.add(target);
+    }
+  } catch (error) {
+    console.warn('No se pudo cargar la selección de destinatarios:', error);
+  }
+}
+
+function persistSelectedTargets() {
+  writeStorage(TARGETS_STORAGE_KEY, JSON.stringify([...selectedTargets]));
+}
 
 function setConnectionState(state) {
   elements.status.dataset.state = state;
@@ -124,23 +139,9 @@ function renderDirectory() {
   }
 
   const previousTarget = elements.targetInput.value.trim();
-  const desiredTarget =
-    normalizeUserId(previousTarget) ||
-    normalizeUserId(readStorage(TARGET_STORAGE_KEY)) ||
-    '';
-
-  // Solo se conserva la selección si el usuario sigue conectado.
-  const activeTarget = others.some((user) => user.userId === desiredTarget)
-    ? desiredTarget
-    : '';
+  const activeTarget = [...selectedTargets][0] ?? '';
 
   elements.peerList.replaceChildren();
-  elements.targetInput.replaceChildren();
-
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = 'Selecciona un destinatario';
-  elements.targetInput.append(placeholder);
 
   if (others.length === 0) {
     const empty = document.createElement('span');
@@ -150,17 +151,13 @@ function renderDirectory() {
   }
 
   for (const user of others) {
-    const option = document.createElement('option');
-    option.value = user.userId;
-    option.textContent = `${user.userId} (${user.node})`;
-    elements.targetInput.append(option);
-
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'peer-chip';
     chip.dataset.userId = user.userId;
-    chip.setAttribute('aria-pressed', String(user.userId === activeTarget));
-    chip.title = `Enviar a ${user.userId} (nodo ${user.node})`;
+    chip.setAttribute('aria-pressed', String(selectedTargets.has(user.userId)));
+    chip.title =
+      `Click: solo ${user.userId}; Ctrl/Cmd+click: añadir o quitar (nodo ${user.node})`;
 
     const name = document.createElement('span');
     name.textContent = user.userId;
@@ -176,14 +173,14 @@ function renderDirectory() {
     p2pDot.title = P2P_STATE_LABELS[dotState] ?? dotState;
 
     chip.append(name, node, p2pDot);
-    chip.addEventListener('click', () => setTarget(user.userId));
+    chip.addEventListener('click', (event) => selectTarget(user.userId, event));
 
     elements.peerList.append(chip);
   }
 
-  if (elements.targetInput.value !== activeTarget) {
-    elements.targetInput.value = activeTarget;
-  }
+  elements.targetInput.value = activeTarget;
+  elements.selectedTargetsLabel.textContent =
+    selectedTargets.size > 0 ? `para: ${[...selectedTargets].join(', ')}` : 'Selecciona destinatarios';
 
   renderActiveP2PState();
 
@@ -191,7 +188,25 @@ function renderDirectory() {
     renderConversation();
   }
 
-  preparePeerForTarget(activeTarget);
+  for (const target of selectedTargets) preparePeerForTarget(target);
+}
+
+function selectTarget(userId, event) {
+  if (event.ctrlKey || event.metaKey) {
+    if (selectedTargets.has(userId)) selectedTargets.delete(userId);
+    else selectedTargets.add(userId);
+  } else if (selectedTargets.has(userId)) {
+    selectedTargets.delete(userId);
+  } else {
+    selectedTargets.clear();
+    selectedTargets.add(userId);
+  }
+
+  persistSelectedTargets();
+  renderDirectory();
+  renderConversation();
+  renderActiveP2PState();
+  elements.input.focus();
 }
 
 function renderPeerStatus(peers) {
@@ -223,6 +238,18 @@ function onWelcome(message) {
 
 function onPresence(message) {
   directory = Array.isArray(message.users) ? message.users : [];
+  const onlineTargets = new Set(
+    directory.filter((user) => user.userId !== senderId).map((user) => user.userId)
+  );
+  let selectionChanged = false;
+  for (const target of selectedTargets) {
+    if (!onlineTargets.has(target)) {
+      selectedTargets.delete(target);
+      selectionChanged = true;
+    }
+  }
+  if (selectionChanged) persistSelectedTargets();
+
   reconcilePeerConnections();
   renderDirectory();
   renderPeerStatus(message.peers);
@@ -255,6 +282,9 @@ function handleIncomingMessage(raw) {
       break;
     case 'chat-error':
       onChatError(message);
+      break;
+    case 'chat-multicast-ack':
+      onChatMulticastAck(message);
       break;
     case 'offer':
     case 'answer':
@@ -344,27 +374,16 @@ configureChat({
 });
 
 loadConversations();
+loadSelectedTargets();
 
 elements.userId.textContent = senderId;
 
-const initialTarget = resolveInitialTarget();
-elements.targetInput.value = initialTarget;
-if (initialTarget) {
-  writeStorage(TARGET_STORAGE_KEY, initialTarget);
+const queryTarget = normalizeUserId(new URLSearchParams(window.location.search).get('target'));
+if (queryTarget) {
+  selectedTargets.clear();
+  selectedTargets.add(queryTarget);
+  persistSelectedTargets();
 }
-
-elements.targetInput.addEventListener('change', () => {
-  const currentTarget = elements.targetInput.value.trim();
-  writeStorage(TARGET_STORAGE_KEY, currentTarget);
-
-  for (const chip of elements.peerList.querySelectorAll('.peer-chip')) {
-    chip.setAttribute('aria-pressed', String(chip.dataset.userId === currentTarget));
-  }
-
-  renderConversation();
-  renderActiveP2PState();
-  preparePeerForTarget(currentTarget);
-});
 
 elements.changeUser.addEventListener('click', () => {
   const next = window.prompt('Nuevo identificador de usuario', senderId);
@@ -384,7 +403,15 @@ elements.changeUser.addEventListener('click', () => {
   window.location.reload();
 });
 
-elements.form.addEventListener('submit', sendMessage);
+elements.form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (selectedTargets.size === 0) {
+    addSystemMessage('Selecciona un destinatario.');
+    return;
+  }
+
+  sendMessage({ text: elements.input.value, targets: [...selectedTargets] });
+});
 elements.clearHistory.addEventListener('click', clearHistory);
 
 window.addEventListener('beforeunload', () => {

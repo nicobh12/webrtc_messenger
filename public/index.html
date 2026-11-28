@@ -180,7 +180,7 @@
           </div>
 
           <div class="peer-strip">
-            <span class="peer-strip__label">Directorio</span>
+            <span class="peer-strip__label">Directorio · Ctrl/Cmd+click para varios</span>
             <div class="peer-list" id="peer-list">
               <span class="peer-list__empty">Esperando usuarios…</span>
             </div>
@@ -201,16 +201,11 @@
 
           <form class="chat-form" id="chat-form" autocomplete="off">
             <div class="chat-form__target">
-              <label class="chat-form__target-label" for="chat-target">Para</label>
-              <select
-                class="chat-form__select chat-form__select--target"
-                id="chat-target"
-                name="target"
-                aria-label="Destinatario"
-                disabled
-              >
-                <option value="">Selecciona un destinatario</option>
-              </select>
+              <span class="chat-form__target-label">Para</span>
+              <input type="hidden" id="chat-target" name="target" />
+              <span class="chat-form__selected-targets" id="selected-targets-label">
+                Selecciona destinatarios
+              </span>
               <span
                 class="p2p-state"
                 id="p2p-state"
